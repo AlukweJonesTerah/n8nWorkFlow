@@ -1,0 +1,1054 @@
+{
+  "name": "Pathways Ingestion - Drive + OneDrive to ingest.participants",
+  "nodes": [
+    {
+      "id": "c82ce62d-bbef-4249-87f1-8c84dee89ad7",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "924c34bb-ba30-43ed-91f3-c18398bde3bd",
+      "name": "Start Run",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        300
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "function uuidv4() {\n  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {\n    const r = (Math.random() * 16) | 0;\n    const v = c === 'x' ? r : (r & 0x3) | 0x8;\n    return v.toString(16);\n  });\n}\n\nreturn [\n  {\n    json: {\n      runId: uuidv4(),\n      startedAt: new Date().toISOString(),\n    },\n  },\n];\n"
+      }
+    },
+    {
+      "id": "76b96b2f-bb61-468b-837b-4b395beac633",
+      "name": "List Data 1-4 Files",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        520,
+        180
+      ],
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "fileFolder",
+        "operation": "search",
+        "searchMethod": "query",
+        "queryString": "('1FelonTn8boY43ROkP-iliYe2X6HDx2IQ' in parents or '1s7d7kyN0Gf7HQHC_WyEzgQN-v-7GmN5Q' in parents or '1c31XZfHgt86rTHK6hCoSIx66NHQFlotv' in parents or '1XdZeo93ULC8Ysn6HynK3GpFHjCmD6c79' in parents)",
+        "returnAll": true,
+        "filter": {
+          "whatToSearch": "files"
+        },
+        "options": {
+          "fields": [
+            "*"
+          ]
+        }
+      },
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "Google Drive - Pathways"
+        }
+      },
+      "notes": "Advanced-search query ORs together 'in parents' for Data 1, 2, 3, and 4's real folder IDs (see DATA_FOLDER_IDS in the build script) \u2014 one node covers all four folders. Each returned file's own `parents` field still says which one it actually came from.",
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "f525c840-848a-441f-a48c-883e13c25bb1",
+      "name": "Record Source Failure: Google Drive",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        520,
+        -40
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "return $input.all().map((item) => {\n  const j = item.json || {};\n  let reason;\n  if (item.error) {\n    reason = item.error.message || String(item.error);\n  } else if (j.error) {\n    reason = (j.error && j.error.message) || j.error;\n  } else if (j.message) {\n    reason = j.message;\n  } else {\n    reason = JSON.stringify(j);\n  }\n  return {\n    json: {\n      source_system: 'google_drive',\n      reason: String(reason),\n      failed_at: new Date().toISOString(),\n    },\n  };\n});\n"
+      },
+      "notes": "Fed by List Data 1-4 Files' error output. Only runs if that node fails (bad credential, revoked token, folder not found, etc)."
+    },
+    {
+      "id": "de405df3-8134-44fa-bfbc-b1abc8e15fa7",
+      "name": "Tag Source: Google Drive",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        780,
+        180
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "return $input.all().map((item) => ({\n  json: {\n    ...item.json,\n    source_system: 'google_drive',\n  },\n}));\n"
+      }
+    },
+    {
+      "id": "da53b14f-916e-4fdd-a336-af2f411c54c5",
+      "name": "Keep CSV or XLSX",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.2,
+      "position": [
+        1040,
+        180
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.name.split('.').pop().toLowerCase() }}",
+              "rightValue": "csv",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "leftValue": "={{ $json.name.split('.').pop().toLowerCase() }}",
+              "rightValue": "xlsx",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "or"
+        }
+      }
+    },
+    {
+      "id": "797fb315-bc96-4d61-9cbe-3d91e94f2b4f",
+      "name": "Limit to 1 File (first test)",
+      "type": "n8n-nodes-base.limit",
+      "typeVersion": 1,
+      "position": [
+        1300,
+        180
+      ],
+      "parameters": {
+        "maxItems": 1,
+        "keep": "firstItems"
+      },
+      "notes": "Acceptance test: caps this run to one file across Data 1-4 combined. Delete or disable this node once the single-file test passes and you're ready to process all four folders."
+    },
+    {
+      "id": "03cbc7ae-34c1-41db-a7d4-ab2094ab781b",
+      "name": "Download File",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        1560,
+        180
+      ],
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "file",
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.id }}"
+        },
+        "options": {
+          "binaryPropertyName": "data"
+        }
+      },
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "Google Drive - Pathways"
+        }
+      }
+    },
+    {
+      "id": "4fb36873-6921-49af-9281-fd0ce26fc647",
+      "name": "List OneDrive Files",
+      "type": "n8n-nodes-base.microsoftOneDrive",
+      "typeVersion": 1.1,
+      "position": [
+        520,
+        620
+      ],
+      "parameters": {
+        "authentication": "microsoftOneDriveOAuth2Api",
+        "resource": "folder",
+        "operation": "getChildren",
+        "folderId": "REPLACE_WITH_ONEDRIVE_FOLDER_ID"
+      },
+      "credentials": {
+        "microsoftOneDriveOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "OneDrive - Pathways"
+        }
+      },
+      "notes": "Set folderId to the real OneDrive folder ID (or 'root' for the drive's top level) before running.",
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "9b8753a3-d633-4c40-af5a-aef47efaefeb",
+      "name": "Record Source Failure: OneDrive",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        520,
+        820
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "return $input.all().map((item) => {\n  const j = item.json || {};\n  let reason;\n  if (item.error) {\n    reason = item.error.message || String(item.error);\n  } else if (j.error) {\n    reason = (j.error && j.error.message) || j.error;\n  } else if (j.message) {\n    reason = j.message;\n  } else {\n    reason = JSON.stringify(j);\n  }\n  return {\n    json: {\n      source_system: 'microsoft_onedrive',\n      reason: String(reason),\n      failed_at: new Date().toISOString(),\n    },\n  };\n});\n"
+      },
+      "notes": "Fed by List OneDrive Files' error output. Only runs if that node fails (bad credential, revoked token, folder not found, etc)."
+    },
+    {
+      "id": "5de6ac13-96c0-4b93-a839-cc4036570bed",
+      "name": "Tag Source: OneDrive",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        780,
+        620
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "return $input.all().map((item) => {\n  const j = item.json;\n  return {\n    json: {\n      ...j,\n      source_system: 'microsoft_onedrive',\n      modifiedTime: j.lastModifiedDateTime,\n      mimeType: j.file ? j.file.mimeType : null,\n      parents: j.parentReference && j.parentReference.id ? [j.parentReference.id] : [],\n    },\n  };\n});\n"
+      },
+      "notes": "Maps OneDrive/Graph's field names onto the same shape the Google Drive branch uses (modifiedTime, mimeType, parents) so the shared nodes downstream don't need to know which source they're looking at."
+    },
+    {
+      "id": "a3f7c013-0c6a-41bd-a260-0705e48b9b74",
+      "name": "Keep CSV or XLSX (OneDrive)",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.2,
+      "position": [
+        1040,
+        620
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.name.split('.').pop().toLowerCase() }}",
+              "rightValue": "csv",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "leftValue": "={{ $json.name.split('.').pop().toLowerCase() }}",
+              "rightValue": "xlsx",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "or"
+        }
+      }
+    },
+    {
+      "id": "9aba3997-fd90-4c0c-95ba-720b63ebf1a4",
+      "name": "Limit to 1 File (OneDrive, first test)",
+      "type": "n8n-nodes-base.limit",
+      "typeVersion": 1,
+      "position": [
+        1300,
+        620
+      ],
+      "parameters": {
+        "maxItems": 1,
+        "keep": "firstItems"
+      },
+      "notes": "Acceptance test: caps this run to one OneDrive file. Delete or disable this node once the single-file test passes."
+    },
+    {
+      "id": "94074546-00d8-4d7e-a154-dba6267ebc62",
+      "name": "Download File (OneDrive)",
+      "type": "n8n-nodes-base.microsoftOneDrive",
+      "typeVersion": 1.1,
+      "position": [
+        1560,
+        620
+      ],
+      "parameters": {
+        "authentication": "microsoftOneDriveOAuth2Api",
+        "resource": "file",
+        "operation": "download",
+        "fileId": "={{ $json.id }}",
+        "binaryPropertyName": "data"
+      },
+      "credentials": {
+        "microsoftOneDriveOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "OneDrive - Pathways"
+        }
+      }
+    },
+    {
+      "id": "0996a3e6-35a1-465a-b026-6776915c4dd4",
+      "name": "Check All Sources Failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        780,
+        -40
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const TOTAL_SOURCES = 2;\n\nconst items = $input.all();\nconst runId = $('Start Run').first().json.runId;\n\nif (items.length >= TOTAL_SOURCES) {\n  const reasons = items.map((it) => `${it.json.source_system}: ${it.json.reason}`).join(' | ');\n  throw new Error(`All ${TOTAL_SOURCES} sources failed, nothing to ingest this run \u2014 ${reasons}`);\n}\n\n// Fewer than all sources failed: log it as a degraded run and let the\n// pipeline continue with whichever source(s) did succeed.\nreturn items.map((item) => ({\n  json: {\n    run_id: runId,\n    drive_file_id: null,\n    file_name: `(${item.json.source_system} unreachable)`,\n    sheet_name: null,\n    status: 'source_unreachable',\n    rows_extracted: 0,\n    rows_loaded: 0,\n    unmapped_column_count: 0,\n    error_message: item.json.reason,\n    started_at: item.json.failed_at,\n  },\n}));\n"
+      },
+      "notes": "Only executes when at least one source failed. Aborts the whole run (throws) only if every source failed; otherwise logs a degraded run to ingestion_log and lets the pipeline continue."
+    },
+    {
+      "id": "2e07ca91-a244-4ff8-8de9-677fd7987ac8",
+      "name": "Upsert Drive File State",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1820,
+        460
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO ingest.drive_file_state (\n  drive_file_id,\n  source_system,\n  file_name,\n  mime_type,\n  parent_folder_id,\n  last_modified_time,\n  last_processed_at,\n  last_status\n) VALUES (\n  $1, $2, $3, $4, $5, $6, now(), 'downloaded'\n)\nON CONFLICT (drive_file_id) DO UPDATE SET\n  source_system = EXCLUDED.source_system,\n  file_name = EXCLUDED.file_name,\n  mime_type = EXCLUDED.mime_type,\n  parent_folder_id = EXCLUDED.parent_folder_id,\n  last_modified_time = EXCLUDED.last_modified_time,\n  last_processed_at = EXCLUDED.last_processed_at,\n  last_status = EXCLUDED.last_status",
+        "options": {
+          "queryReplacement": "={{ [$json.id, $json.source_system, $json.name, $json.mimeType, ($json.parents || [])[0] || null, $json.modifiedTime || new Date().toISOString()] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_ME",
+          "name": "ICTA Reporting PostgreSQL"
+        }
+      }
+    },
+    {
+      "id": "1bed94aa-bea2-4d4b-a9ac-94570a1ab940",
+      "name": "Upsert Drive File State (Pathways DB)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1820,
+        620
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO ingest.drive_file_state (\n  drive_file_id,\n  source_system,\n  file_name,\n  mime_type,\n  parent_folder_id,\n  last_modified_time,\n  last_processed_at,\n  last_status\n) VALUES (\n  $1, $2, $3, $4, $5, $6, now(), 'downloaded'\n)\nON CONFLICT (drive_file_id) DO UPDATE SET\n  source_system = EXCLUDED.source_system,\n  file_name = EXCLUDED.file_name,\n  mime_type = EXCLUDED.mime_type,\n  parent_folder_id = EXCLUDED.parent_folder_id,\n  last_modified_time = EXCLUDED.last_modified_time,\n  last_processed_at = EXCLUDED.last_processed_at,\n  last_status = EXCLUDED.last_status",
+        "options": {
+          "queryReplacement": "={{ [$json.id, $json.source_system, $json.name, $json.mimeType, ($json.parents || [])[0] || null, $json.modifiedTime || new Date().toISOString()] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_ME",
+          "name": "Pathways-Only PostgreSQL"
+        }
+      }
+    },
+    {
+      "id": "891a7db9-23a9-457f-8e87-9bdd0f6f5e0f",
+      "name": "Is XLSX?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1820,
+        180
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.name.split('.').pop().toLowerCase() }}",
+              "rightValue": "xlsx",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "204df7b0-8477-4ace-956e-91887718baa2",
+      "name": "Extract XLSX Rows",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        2080,
+        60
+      ],
+      "parameters": {
+        "operation": "xlsx",
+        "binaryPropertyName": "data",
+        "options": {
+          "headerRow": true
+        }
+      }
+    },
+    {
+      "id": "9f1b3030-cf29-4750-9c46-e3b550f26669",
+      "name": "Extract CSV Rows",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        2080,
+        300
+      ],
+      "parameters": {
+        "operation": "csv",
+        "binaryPropertyName": "data",
+        "options": {
+          "headerRow": true
+        }
+      }
+    },
+    {
+      "id": "feacf246-bd73-4a13-8a3b-0874a12655ac",
+      "name": "Map Columns & Detect Unmapped",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2340,
+        180
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const ALIASES = {\n  national_id: ['national id', 'nationalid', 'id number', 'idnumber', 'national id no', 'id no', 'id_number'],\n  full_name: ['full name', 'fullname', 'name', 'participant name', 'trainee name'],\n  first_name: ['first name', 'firstname'],\n  last_name: ['last name', 'lastname', 'surname'],\n  gender: ['gender', 'sex'],\n  email: ['email', 'email address', 'emailaddress'],\n  phone_number: ['phone number', 'phone', 'phonenumber', 'mobile', 'mobile number', 'contact', 'telephone'],\n  age: ['age'],\n  age_group: ['age group', 'agegroup', 'age bracket'],\n  county: ['county', 'county name'],\n  sub_county: ['sub county', 'subcounty'],\n  ward: ['ward'],\n  village: ['village', 'village town', 'town', 'location'],\n  organization: ['organization', 'organisation', 'institution', 'company'],\n  role: ['role', 'designation', 'position'],\n  state_department: ['state department', 'department'],\n  directorate: ['directorate'],\n  disability: ['disability', 'disability status', 'pwd status'],\n  disability_type: ['disability type', 'type of disability'],\n  device_type: ['device type', 'device'],\n  device_description: ['device description', 'device desc'],\n  education_level: ['education level', 'education', 'level of education'],\n  internet_access: ['internet access', 'has internet'],\n  trainer_name: ['trainer name', 'trainer'],\n  trainer_phone: ['trainer phone', 'trainer contact'],\n  follow_up_consent: ['follow up consent', 'consent'],\n  remarks: ['remarks', 'comments', 'notes'],\n  username: ['username', 'user name'],\n  completion_date: ['completion date', 'date completed'],\n  registration_date: ['registration date', 'date registered', 'reg date'],\n  training_time: ['training time', 'time spent'],\n  quiz_average: ['quiz average', 'average score', 'quiz score'],\n  percent_complete: ['percent complete', 'completion rate', 'percentage complete'],\n  program_cohort: ['program cohort', 'cohort', 'program'],\n  cluster: ['cluster'],\n  label: ['label'],\n  serial_no: ['serial no', 'serial number', 'sno', 'sn', 'no'],\n};\n\nfunction normalize(value) {\n  return String(value)\n    .trim()\n    .toLowerCase()\n    .replace(/[_\\-]+/g, ' ')\n    .replace(/[^a-z0-9]+/g, ' ')\n    .trim()\n    .replace(/\\s+/g, ' ');\n}\n\nconst CANONICAL_FIELDS = Object.keys(ALIASES);\nconst ALIAS_LOOKUP = {};\nfor (const canonical of CANONICAL_FIELDS) {\n  ALIAS_LOOKUP[normalize(canonical)] = canonical;\n  for (const alias of ALIASES[canonical]) {\n    ALIAS_LOOKUP[normalize(alias)] = canonical;\n  }\n}\n\nfunction levenshtein(a, b) {\n  const m = a.length;\n  const n = b.length;\n  const dp = [];\n  for (let i = 0; i <= m; i++) {\n    dp.push(new Array(n + 1).fill(0));\n    dp[i][0] = i;\n  }\n  for (let j = 0; j <= n; j++) dp[0][j] = j;\n  for (let i = 1; i <= m; i++) {\n    for (let j = 1; j <= n; j++) {\n      dp[i][j] = a[i - 1] === b[j - 1]\n        ? dp[i - 1][j - 1]\n        : 1 + Math.min(dp[i - 1][j - 1], dp[i - 1][j], dp[i][j - 1]);\n    }\n  }\n  return dp[m][n];\n}\n\nfunction similarity(a, b) {\n  const maxLen = Math.max(a.length, b.length) || 1;\n  return 1 - levenshtein(a, b) / maxLen;\n}\n\nfunction cyrb53(str, seed) {\n  seed = seed || 0;\n  let h1 = 0xdeadbeef ^ seed;\n  let h2 = 0x41c6ce57 ^ seed;\n  for (let i = 0; i < str.length; i++) {\n    const ch = str.charCodeAt(i);\n    h1 = Math.imul(h1 ^ ch, 2654435761);\n    h2 = Math.imul(h2 ^ ch, 1597334677);\n  }\n  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507);\n  h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);\n  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507);\n  h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);\n  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16);\n}\n\n// Extract From File replaces each row's json with just the parsed spreadsheet\n// columns, so the originating file's metadata (id/name/source_system) has to\n// be recovered by tracing pairedItem lineage back to whichever \"Tag Source\"\n// node produced it. $('Node Name') requires a literal node name, so with\n// multiple sources feeding this same node we try each candidate in turn \u2014\n// itemMatching throws if that node isn't actually this item's ancestor.\n// Adding a third source later just means adding one more entry here.\nconst SOURCE_TAG_NODES = [\n  { node: 'Tag Source: Google Drive', system: 'google_drive' },\n  { node: 'Tag Source: OneDrive', system: 'microsoft_onedrive' },\n];\n\nfunction resolveSource(i) {\n  for (const candidate of SOURCE_TAG_NODES) {\n    try {\n      const matched = $(candidate.node).itemMatching(i);\n      if (matched && matched.json) {\n        return { driveFileId: matched.json.id, sourceFile: matched.json.name, sourceSystem: candidate.system };\n      }\n    } catch (e) {\n      // i's lineage doesn't pass through this candidate's tag node \u2014 try the next one.\n    }\n  }\n  throw new Error('Row ' + i + \" could not be traced back to a known source \u2014 add its 'Tag Source' node to SOURCE_TAG_NODES.\");\n}\n\nconst runId = $('Start Run').first().json.runId;\nconst startedAt = $('Start Run').first().json.startedAt;\n\nconst items = $input.all();\nconst output = [];\nconst fileStats = {};\n\nfor (let i = 0; i < items.length; i++) {\n  const item = items[i];\n  const { driveFileId, sourceFile, sourceSystem } = resolveSource(i);\n  const statsKey = sourceSystem + '::' + driveFileId;\n\n  fileStats[statsKey] = fileStats[statsKey] || {\n    drive_file_id: driveFileId,\n    file_name: sourceFile,\n    rows_extracted: 0,\n    unmapped_column_count: 0,\n  };\n  fileStats[statsKey].rows_extracted++;\n\n  const participant = {\n    row_hash: '',\n    source_system: sourceSystem,\n    drive_file_id: driveFileId,\n    source_file: sourceFile,\n    source_sheet: null,\n    source_row_number: i + 1,\n  };\n  for (const field of CANONICAL_FIELDS) participant[field] = null;\n\n  const extra = {};\n  const rawEntries = Object.entries(item.json);\n\n  for (const [rawKey, rawValue] of rawEntries) {\n    const normKey = normalize(rawKey);\n    const canonical = ALIAS_LOOKUP[normKey];\n    const value = rawValue === undefined || rawValue === '' ? null : rawValue;\n\n    if (canonical) {\n      participant[canonical] = value;\n      continue;\n    }\n\n    extra[rawKey] = value;\n    fileStats[statsKey].unmapped_column_count++;\n\n    let bestField = null;\n    let bestScore = 0;\n    for (const field of CANONICAL_FIELDS) {\n      const score = similarity(normKey, normalize(field));\n      if (score > bestScore) {\n        bestScore = score;\n        bestField = field;\n      }\n    }\n\n    output.push({\n      json: {\n        _recordType: 'unmapped_column',\n        drive_file_id: driveFileId,\n        file_name: sourceFile,\n        sheet_name: null,\n        raw_column_name: rawKey,\n        normalized_column_name: normKey,\n        sample_value: value === null ? null : String(value).slice(0, 200),\n        best_fuzzy_match: bestScore >= 0.5 ? bestField : null,\n        best_fuzzy_score: Math.round(bestScore * 100) / 100,\n      },\n    });\n  }\n\n  const hashInput = sourceSystem + '|' + sourceFile + '|' + JSON.stringify(rawEntries.slice().sort());\n  participant.row_hash = 'r' + cyrb53(hashInput);\n  participant.extra_json = extra;\n  participant._recordType = 'participant';\n  output.push({ json: participant });\n}\n\nfor (const statsKey of Object.keys(fileStats)) {\n  const stats = fileStats[statsKey];\n  output.push({\n    json: {\n      _recordType: 'ingestion_log',\n      run_id: runId,\n      drive_file_id: stats.drive_file_id,\n      file_name: stats.file_name,\n      sheet_name: null,\n      status: 'loaded',\n      rows_extracted: stats.rows_extracted,\n      rows_loaded: stats.rows_extracted,\n      unmapped_column_count: stats.unmapped_column_count,\n      error_message: null,\n      started_at: startedAt,\n    },\n  });\n}\n\nreturn output;\n"
+      }
+    },
+    {
+      "id": "8902b2c0-0dfa-43a7-b1a4-264067002123",
+      "name": "Clean & Transform Participant Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2600,
+        180
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const TITLE_CASE_FIELDS = [\n  'full_name', 'first_name', 'last_name', 'county', 'sub_county', 'ward', 'village',\n  'organization', 'role', 'state_department', 'directorate', 'trainer_name',\n];\n\nconst YES_NO_FIELDS = ['disability', 'follow_up_consent', 'internet_access'];\n\nconst GENDER_MAP = { m: 'Male', male: 'Male', man: 'Male', f: 'Female', female: 'Female', woman: 'Female' };\nconst YES_MAP = { y: 'Yes', yes: 'Yes', true: 'Yes', '1': 'Yes' };\nconst NO_MAP = { n: 'No', no: 'No', false: 'No', '0': 'No' };\n\nfunction trimAll(value) {\n  if (value === null || value === undefined) return null;\n  const s = String(value).trim().replace(/\\s+/g, ' ');\n  return s === '' ? null : s;\n}\n\nfunction titleCase(value) {\n  const s = trimAll(value);\n  if (!s) return s;\n  return s\n    .toLowerCase()\n    .split(' ')\n    .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w))\n    .join(' ');\n}\n\nfunction normalizeGender(value) {\n  const s = trimAll(value);\n  if (!s) return s;\n  return GENDER_MAP[s.toLowerCase()] || titleCase(s);\n}\n\nfunction normalizeYesNo(value) {\n  const s = trimAll(value);\n  if (!s) return s;\n  const key = s.toLowerCase();\n  return YES_MAP[key] || NO_MAP[key] || titleCase(s);\n}\n\nfunction normalizeEmail(value) {\n  const s = trimAll(value);\n  return s ? s.toLowerCase() : s;\n}\n\n// Kenyan mobile numbers: 07xxxxxxxx, 7xxxxxxxx, 2547xxxxxxxx, +2547xxxxxxxx\n// all become +2547xxxxxxxx. Anything that doesn't look like that pattern is\n// just trimmed, not forced, so we don't corrupt a genuinely different format.\nfunction normalizePhone(value) {\n  const s = trimAll(value);\n  if (!s) return s;\n  let digits = s.replace(/[^\\d+]/g, '').replace(/^\\+/, '');\n  if (digits.startsWith('0')) digits = '254' + digits.slice(1);\n  else if (/^[71]\\d{8}$/.test(digits)) digits = '254' + digits;\n  return /^254\\d{9}$/.test(digits) ? '+' + digits : s;\n}\n\nfunction normalizeDigitsOnly(value) {\n  const s = trimAll(value);\n  if (!s) return s;\n  const digits = s.replace(/\\D/g, '');\n  return digits || s;\n}\n\nfunction normalizePercent(value) {\n  const s = trimAll(value);\n  return s ? s.replace('%', '').trim() : s;\n}\n\nfunction normalizeDate(value) {\n  const s = trimAll(value);\n  if (!s) return s;\n  const parsed = new Date(s);\n  return isNaN(parsed.getTime()) ? s : parsed.toISOString().slice(0, 10);\n}\n\nconst HANDLED_FIELDS = new Set([\n  ...TITLE_CASE_FIELDS,\n  ...YES_NO_FIELDS,\n  'gender', 'email', 'phone_number', 'trainer_phone', 'national_id',\n  'percent_complete', 'quiz_average', 'completion_date', 'registration_date',\n  'extra_json', 'source_row_number',\n]);\n\nconst items = $input.all();\n\nreturn items.map((item) => {\n  const j = item.json;\n  if (j._recordType !== 'participant') {\n    return { json: j };\n  }\n\n  const cleaned = { ...j };\n\n  for (const field of TITLE_CASE_FIELDS) {\n    if (field in cleaned) cleaned[field] = titleCase(cleaned[field]);\n  }\n  for (const field of YES_NO_FIELDS) {\n    if (field in cleaned) cleaned[field] = normalizeYesNo(cleaned[field]);\n  }\n\n  cleaned.gender = normalizeGender(cleaned.gender);\n  cleaned.email = normalizeEmail(cleaned.email);\n  cleaned.phone_number = normalizePhone(cleaned.phone_number);\n  cleaned.trainer_phone = normalizePhone(cleaned.trainer_phone);\n  cleaned.national_id = normalizeDigitsOnly(cleaned.national_id);\n  cleaned.percent_complete = normalizePercent(cleaned.percent_complete);\n  cleaned.quiz_average = normalizePercent(cleaned.quiz_average);\n  cleaned.completion_date = normalizeDate(cleaned.completion_date);\n  cleaned.registration_date = normalizeDate(cleaned.registration_date);\n\n  // Everything else that's still a plain string just gets trimmed/collapsed \u2014\n  // no forced casing, so free-text (remarks) and identifiers (serial_no,\n  // username) aren't mangled.\n  for (const key of Object.keys(cleaned)) {\n    if (HANDLED_FIELDS.has(key)) continue;\n    if (typeof cleaned[key] === 'string') cleaned[key] = trimAll(cleaned[key]);\n  }\n\n  return { json: cleaned };\n});\n"
+      },
+      "notes": "Only touches _recordType == 'participant' items. Title-cases names/locations, normalizes gender + yes/no fields, normalizes phone numbers to +254 format, strips non-digits from national_id, trims everything else."
+    },
+    {
+      "id": "c5386e14-34aa-4ac6-b11f-dc480ca219b4",
+      "name": "Route By Record Type",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        2860,
+        180
+      ],
+      "parameters": {
+        "mode": "rules",
+        "rules": {
+          "values": [
+            {
+              "outputKey": "participant",
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json._recordType }}",
+                    "rightValue": "participant",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "outputKey": "unmapped_column",
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json._recordType }}",
+                    "rightValue": "unmapped_column",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "outputKey": "ingestion_log",
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json._recordType }}",
+                    "rightValue": "ingestion_log",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "eeeffd79-5da9-473b-827e-0c895bdc4f86",
+      "name": "Insert Participant Row",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        3120,
+        20
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO ingest.participants (\n  row_hash,\n  source_system,\n  drive_file_id,\n  source_file,\n  source_sheet,\n  source_row_number,\n  national_id,\n  full_name,\n  first_name,\n  last_name,\n  gender,\n  email,\n  phone_number,\n  age,\n  age_group,\n  county,\n  sub_county,\n  ward,\n  village,\n  organization,\n  role,\n  state_department,\n  directorate,\n  disability,\n  disability_type,\n  device_type,\n  device_description,\n  education_level,\n  internet_access,\n  trainer_name,\n  trainer_phone,\n  follow_up_consent,\n  remarks,\n  username,\n  completion_date,\n  registration_date,\n  training_time,\n  quiz_average,\n  percent_complete,\n  program_cohort,\n  cluster,\n  label,\n  serial_no,\n  extra_json\n) VALUES (\n  $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44::jsonb\n)\nON CONFLICT (row_hash) DO NOTHING",
+        "options": {
+          "queryReplacement": "={{ [$json.row_hash, $json.source_system, $json.drive_file_id, $json.source_file, $json.source_sheet, $json.source_row_number, $json.national_id, $json.full_name, $json.first_name, $json.last_name, $json.gender, $json.email, $json.phone_number, $json.age, $json.age_group, $json.county, $json.sub_county, $json.ward, $json.village, $json.organization, $json.role, $json.state_department, $json.directorate, $json.disability, $json.disability_type, $json.device_type, $json.device_description, $json.education_level, $json.internet_access, $json.trainer_name, $json.trainer_phone, $json.follow_up_consent, $json.remarks, $json.username, $json.completion_date, $json.registration_date, $json.training_time, $json.quiz_average, $json.percent_complete, $json.program_cohort, $json.cluster, $json.label, $json.serial_no, JSON.stringify($json.extra_json)] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_ME",
+          "name": "ICTA Reporting PostgreSQL"
+        }
+      }
+    },
+    {
+      "id": "cb2d841d-0207-40c5-9a86-664132512715",
+      "name": "Insert Participant Row (Pathways DB)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        3120,
+        130
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO ingest.participants (\n  row_hash,\n  source_system,\n  drive_file_id,\n  source_file,\n  source_sheet,\n  source_row_number,\n  national_id,\n  full_name,\n  first_name,\n  last_name,\n  gender,\n  email,\n  phone_number,\n  age,\n  age_group,\n  county,\n  sub_county,\n  ward,\n  village,\n  organization,\n  role,\n  state_department,\n  directorate,\n  disability,\n  disability_type,\n  device_type,\n  device_description,\n  education_level,\n  internet_access,\n  trainer_name,\n  trainer_phone,\n  follow_up_consent,\n  remarks,\n  username,\n  completion_date,\n  registration_date,\n  training_time,\n  quiz_average,\n  percent_complete,\n  program_cohort,\n  cluster,\n  label,\n  serial_no,\n  extra_json\n) VALUES (\n  $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44::jsonb\n)\nON CONFLICT (row_hash) DO NOTHING",
+        "options": {
+          "queryReplacement": "={{ [$json.row_hash, $json.source_system, $json.drive_file_id, $json.source_file, $json.source_sheet, $json.source_row_number, $json.national_id, $json.full_name, $json.first_name, $json.last_name, $json.gender, $json.email, $json.phone_number, $json.age, $json.age_group, $json.county, $json.sub_county, $json.ward, $json.village, $json.organization, $json.role, $json.state_department, $json.directorate, $json.disability, $json.disability_type, $json.device_type, $json.device_description, $json.education_level, $json.internet_access, $json.trainer_name, $json.trainer_phone, $json.follow_up_consent, $json.remarks, $json.username, $json.completion_date, $json.registration_date, $json.training_time, $json.quiz_average, $json.percent_complete, $json.program_cohort, $json.cluster, $json.label, $json.serial_no, JSON.stringify($json.extra_json)] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_ME",
+          "name": "Pathways-Only PostgreSQL"
+        }
+      }
+    },
+    {
+      "id": "e021ba99-06f5-44ca-ae37-e6d819556dd8",
+      "name": "Insert Unmapped Column Log",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        3120,
+        240
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO ingest.unmapped_columns_log (\n  drive_file_id,\n  file_name,\n  sheet_name,\n  raw_column_name,\n  normalized_column_name,\n  sample_value,\n  best_fuzzy_match,\n  best_fuzzy_score\n) VALUES (\n  $1, $2, $3, $4, $5, $6, $7, $8\n)",
+        "options": {
+          "queryReplacement": "={{ [$json.drive_file_id, $json.file_name, $json.sheet_name, $json.raw_column_name, $json.normalized_column_name, $json.sample_value, $json.best_fuzzy_match, $json.best_fuzzy_score] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_ME",
+          "name": "ICTA Reporting PostgreSQL"
+        }
+      }
+    },
+    {
+      "id": "b2552705-9946-4224-925d-122bda602548",
+      "name": "Insert Unmapped Column Log (Pathways DB)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        3120,
+        350
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO ingest.unmapped_columns_log (\n  drive_file_id,\n  file_name,\n  sheet_name,\n  raw_column_name,\n  normalized_column_name,\n  sample_value,\n  best_fuzzy_match,\n  best_fuzzy_score\n) VALUES (\n  $1, $2, $3, $4, $5, $6, $7, $8\n)",
+        "options": {
+          "queryReplacement": "={{ [$json.drive_file_id, $json.file_name, $json.sheet_name, $json.raw_column_name, $json.normalized_column_name, $json.sample_value, $json.best_fuzzy_match, $json.best_fuzzy_score] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_ME",
+          "name": "Pathways-Only PostgreSQL"
+        }
+      }
+    },
+    {
+      "id": "5758332c-7547-4529-b45a-e832bbf64b36",
+      "name": "Insert Ingestion Log",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        3120,
+        460
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO ingest.ingestion_log (\n  run_id,\n  drive_file_id,\n  file_name,\n  sheet_name,\n  status,\n  rows_extracted,\n  rows_loaded,\n  unmapped_column_count,\n  error_message,\n  started_at\n  , finished_at\n) VALUES (\n  $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now()\n)",
+        "options": {
+          "queryReplacement": "={{ [$json.run_id, $json.drive_file_id, $json.file_name, $json.sheet_name, $json.status, $json.rows_extracted, $json.rows_loaded, $json.unmapped_column_count, $json.error_message, $json.started_at] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_ME",
+          "name": "ICTA Reporting PostgreSQL"
+        }
+      }
+    },
+    {
+      "id": "f5dd4492-7269-47be-96b2-0692cf57977d",
+      "name": "Insert Ingestion Log (Pathways DB)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        3120,
+        570
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO ingest.ingestion_log (\n  run_id,\n  drive_file_id,\n  file_name,\n  sheet_name,\n  status,\n  rows_extracted,\n  rows_loaded,\n  unmapped_column_count,\n  error_message,\n  started_at\n  , finished_at\n) VALUES (\n  $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now()\n)",
+        "options": {
+          "queryReplacement": "={{ [$json.run_id, $json.drive_file_id, $json.file_name, $json.sheet_name, $json.status, $json.rows_extracted, $json.rows_loaded, $json.unmapped_column_count, $json.error_message, $json.started_at] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_ME",
+          "name": "Pathways-Only PostgreSQL"
+        }
+      }
+    },
+    {
+      "id": "86c3036b-17b4-4df0-a9fc-f56b3c6edacf",
+      "name": "Mark Dashboard Dirty",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        3380,
+        20
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE app.dashboard_refresh_state\nSET source_version = source_version + 1,\n    dirty_at = now()\nWHERE singleton = true"
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_ME",
+          "name": "ICTA Reporting PostgreSQL"
+        }
+      },
+      "notes": "Bumps app.dashboard_refresh_state after a successful participant insert on the shared DB, so Superset (or anything reading that table) can tell new data landed. Only covers our side of the bookkeeping \u2014 still need Superset's own cache/refresh call wired in once its URL and credentials are available."
+    },
+    {
+      "id": "e9121a23-ac71-40a9-bad5-d83d99e6d4b2",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -140
+      ],
+      "parameters": {
+        "width": 480,
+        "height": 300,
+        "content": "## Before running\n1. Run `sql/migrations/0001_add_source_system.sql` against BOTH Postgres targets \u2014 the `source_system` column is new on both.\n2. Create a Postgres credential named **ICTA Reporting PostgreSQL** (the shared ICTA+Pathways DB \u2014 real host/port/database/user/password from the team, SSL: disable) and assign it on every node whose name does NOT say \"(Pathways DB)\".\n3. Create a second Postgres credential named **Pathways-Only PostgreSQL** and assign it on every node whose name DOES say \"(Pathways DB)\" \u2014 this one doesn't have real credentials yet, so point it at the local `postgres-pathways` sandbox for now (see compose.yaml) and swap in real ones once the team provisions that database.\n4. Create/select a Google Drive OAuth2 credential on both Google Drive nodes, and a Microsoft OneDrive OAuth2 credential on both OneDrive nodes.\n5. **List Data 1-4 Files** already has Data 1-4's real folder IDs baked into its query. Set `folderId` on **List OneDrive Files** to the real OneDrive folder ID.\n6. Leave both **Limit to 1 File** nodes enabled for the first acceptance-test run. Delete or disable them once that passes.\n\nWrites to the shared `ingest`/`app` schema on the real reporting DB \u2014 test against the local `postgres-reporting` sandbox first if unsure.\n\n**Mark Dashboard Dirty** only updates our own bookkeeping table (`app.dashboard_refresh_state`) \u2014 it does not call Superset yet. That needs Superset's URL + an API credential, which we don't have wired up."
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Start Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start Run": {
+      "main": [
+        [
+          {
+            "node": "List Data 1-4 Files",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "List OneDrive Files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List Data 1-4 Files": {
+      "main": [
+        [
+          {
+            "node": "Tag Source: Google Drive",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Source Failure: Google Drive",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tag Source: Google Drive": {
+      "main": [
+        [
+          {
+            "node": "Keep CSV or XLSX",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Keep CSV or XLSX": {
+      "main": [
+        [
+          {
+            "node": "Limit to 1 File (first test)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Limit to 1 File (first test)": {
+      "main": [
+        [
+          {
+            "node": "Download File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List OneDrive Files": {
+      "main": [
+        [
+          {
+            "node": "Tag Source: OneDrive",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Source Failure: OneDrive",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tag Source: OneDrive": {
+      "main": [
+        [
+          {
+            "node": "Keep CSV or XLSX (OneDrive)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Keep CSV or XLSX (OneDrive)": {
+      "main": [
+        [
+          {
+            "node": "Limit to 1 File (OneDrive, first test)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Limit to 1 File (OneDrive, first test)": {
+      "main": [
+        [
+          {
+            "node": "Download File (OneDrive)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Source Failure: Google Drive": {
+      "main": [
+        [
+          {
+            "node": "Check All Sources Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Source Failure: OneDrive": {
+      "main": [
+        [
+          {
+            "node": "Check All Sources Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check All Sources Failed": {
+      "main": [
+        [
+          {
+            "node": "Insert Ingestion Log",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Insert Ingestion Log (Pathways DB)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download File": {
+      "main": [
+        [
+          {
+            "node": "Upsert Drive File State",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Upsert Drive File State (Pathways DB)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Is XLSX?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download File (OneDrive)": {
+      "main": [
+        [
+          {
+            "node": "Upsert Drive File State",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Upsert Drive File State (Pathways DB)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Is XLSX?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is XLSX?": {
+      "main": [
+        [
+          {
+            "node": "Extract XLSX Rows",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Extract CSV Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract XLSX Rows": {
+      "main": [
+        [
+          {
+            "node": "Map Columns & Detect Unmapped",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract CSV Rows": {
+      "main": [
+        [
+          {
+            "node": "Map Columns & Detect Unmapped",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Map Columns & Detect Unmapped": {
+      "main": [
+        [
+          {
+            "node": "Clean & Transform Participant Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clean & Transform Participant Data": {
+      "main": [
+        [
+          {
+            "node": "Route By Record Type",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route By Record Type": {
+      "main": [
+        [
+          {
+            "node": "Insert Participant Row",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Insert Participant Row (Pathways DB)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Insert Unmapped Column Log",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Insert Unmapped Column Log (Pathways DB)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Insert Ingestion Log",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Insert Ingestion Log (Pathways DB)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Participant Row": {
+      "main": [
+        [
+          {
+            "node": "Mark Dashboard Dirty",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}
