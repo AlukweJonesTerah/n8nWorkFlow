@@ -109,7 +109,7 @@ $env:GENERIC_TIMEZONE = "Africa/Nairobi"
 n8n start
 ```
 
-(macOS/Linux: `GENERIC_TIMEZONE=Africa/Nairobi n8n start`.) The first start takes a minute. Open <http://localhost:5678> and create the owner account. n8n runs **only while that terminal stays open** — for scheduled runs you would need to keep it running (a service, `pm2`, or a machine that stays on). Its data and encryption key live in `%USERPROFILE%\.n8n` (`~/.n8n` on macOS/Linux): **back that folder up and never delete `config` inside it**, or every saved credential becomes unreadable.
+(macOS/Linux: `GENERIC_TIMEZONE=Africa/Nairobi n8n start`.) The **install takes about 15 minutes** (n8n is large); the first start then takes a minute. (Tested on Linux with Node 22.23: install, workflow import and server start all worked; the steps are the same on Windows.) Open <http://localhost:5678> and create the owner account. n8n runs **only while that terminal stays open** — for scheduled runs you would need to keep it running (a service, `pm2`, or a machine that stays on). Its data and encryption key live in `%USERPROFILE%\.n8n` (`~/.n8n` on macOS/Linux): **back that folder up and never delete `config` inside it**, or every saved credential becomes unreadable.
 
 If PowerShell says `n8n : The term 'n8n' is not recognized`, n8n is not installed on that machine — either this step was skipped, or n8n is actually running in Docker (Path A) and you need `docker exec …` instead.
 
@@ -127,7 +127,16 @@ The pipeline writes to **one** Postgres database — whichever your credential p
 - *Path A:* the `postgres-pathways` container already has the schema (applied automatically the first time its volume was created).
 - *Path B:* install PostgreSQL 16+, create an empty database, and apply the schema once: `psql -U <user> -d <db> -f sql/reporting_schema.sql`.
 
-> **Never run `sql/reporting_schema.sql` against a database that already has the `ingest`/`app` schemas** — in particular the shared team database (`icta_dashboard`). The file is for building a fresh local copy only. A database created before the `source_system` column existed needs [`sql/migrations/0001_add_source_system.sql`](../sql/migrations/0001_add_source_system.sql) instead; a database built from the current schema file (including the Neon one) already has it.
+> **Never run `sql/reporting_schema.sql` against a database that already has the `ingest`/`app` schemas** — in particular the shared team database (`icta_dashboard`). The file is for building a fresh local copy only. A database created from an older schema needs the migrations instead — **run them in order, before importing the workflows** (the workflows' INSERT names these columns, so without them every window fails with `column "region" of relation "participants" does not exist`):
+>
+> | Migration | Adds | Needed if the database has no… |
+> | --- | --- | --- |
+> | [`0001_add_source_system.sql`](../sql/migrations/0001_add_source_system.sql) | `source_system` | `source_system` column |
+> | [`0002_add_participant_source_columns.sql`](../sql/migrations/0002_add_participant_source_columns.sql) | 23 source-file columns (`region`, `cdc_name`, `course_taken`, `partner`, …) | `partner` column |
+>
+> A database freshly built from the current `sql/reporting_schema.sql` has both. Both migrations are additive, instant, and safe to run twice.
+>
+> **Rows loaded before 0002** keep those 23 values inside `extra_json`. Either `TRUNCATE ingest.participants;` and reload (frees space immediately — the safe choice on a storage-capped plan), or run the optional [`0003_backfill_participant_source_columns.sql`](../sql/migrations/0003_backfill_participant_source_columns.sql) (read its storage warning first).
 
 ---
 
@@ -200,6 +209,8 @@ n8n start
 Either way you should see `Successfully imported 2 workflows`. (Harmless startup notices about Confluence or "Postgres 16 … compatibility support only" can be ignored.) Refresh the editor: two workflows appear.
 
 **Why the command line and not the editor's *Import from file*?** The command line keeps the fixed workflow IDs (`pwIngestion000001`, `pwChunkLoader0001`) that the ingestion workflow uses to find the loader, and re-importing *updates* the workflows instead of creating another copy. The editor import works too, but it assigns new IDs: import the loader first, then open **Load Chunk** in the ingestion workflow and pick the loader again from its dropdown.
+
+> **Migrate the database first** (section 3) if it predates the current schema — import first and every load fails with `column … does not exist`.
 
 > **Re-importing replaces the workflows** — including any edits made in the editor, such as a `MAX_ROWS` change. **Never re-import while a run is in progress:** the loader is fetched fresh for every window, so the change lands mid-run.
 
@@ -275,7 +286,7 @@ So **wait up to 45 minutes** before worrying. Times depend on the network distan
 ```sql
 SELECT count(*) FROM ingest.participants;   -- 825,177  (870,902 rows read; 45,725 exact duplicates skipped)
 SELECT status, rows_extracted, rows_loaded, unmapped_column_count
-  FROM ingest.ingestion_log ORDER BY id DESC LIMIT 2;   -- loaded | 870902 | 825177 (fewer if a partial load existed before) | 23
+  FROM ingest.ingestion_log ORDER BY id DESC LIMIT 2;   -- loaded | 870902 | 825177 (fewer if a partial load existed before) | 0 unmapped columns
 ```
 
 ---
@@ -307,14 +318,14 @@ SELECT raw_column_name, sample_value, best_fuzzy_match FROM ingest.unmapped_colu
 SELECT source_version, dirty_at FROM app.dashboard_refresh_state;                 -- bumped
 ```
 
-**2. Review the unmapped columns.** 23 of the file's 42 columns aren't mapped to a canonical field (e.g. `region`, `cdc_name`, `kictanet_cluster`, `date_trained`). Their values are **kept** in `ingest.participants.extra_json`, so nothing is lost. Decide with the data owner which deserve a real column or an alias (the `ALIASES` table at the top of [`scripts/js/loader_parse_window.js`](../scripts/js/loader_parse_window.js)).
+**2. Check the mapping.** All 42 columns of this file now land in a real `ingest.participants` column (the 23 that used to fall into `extra_json` — `region`, `cdc_name`, `course_taken`, `partner`, … — are real columns of the same name), so `ingest.unmapped_columns_log` stays empty for it. Ten of those 23 are completely empty in this file (`region_group`, `assistive_device`, `primary_language`, `internet_frequency`, `device_used`, `self_rated_digital_skill`, `cdc_name`, `cdc_phone`, `institution_level`, `trainer_level`); they exist for future files. If a *future* file brings columns that don't match, they are kept in `extra_json` and listed in `unmapped_columns_log`, and you add them the way [data4-workflow.md](data4-workflow.md#extending-the-column-mapping) describes.
 
 > **A changed mapping does not update rows that are already loaded.** Rows are matched on a hash of the raw source values, so a re-run *skips* them. To re-map, delete that file's rows first — `DELETE FROM ingest.participants WHERE source_file = '20_million_by_2032tbl.csv';` — rebuild, re-import, and run again.
 
 **3. Check data quality — known issues in this source file.** These come from the CSV itself, not the pipeline:
 - ~45,000 phone numbers are in scientific notation (`2.55E+11`) — Excel damage that lost the digits. They're stored as-is and can't be recovered from this file.
 - ~23,000 characters in names are the replacement character `�` (text that was already corrupted before the export).
-- In the first rows the columns `disability_status` and `disability_type` contain values like *Crop Farming* and *University Degree*, which look like they belong to other columns. **Confirm with the data owner** whether the export's columns are misaligned before relying on disability figures.
+- **Several columns look misaligned in the export.** `disability_status` / `disability_type` hold values like *Crop Farming* and *University Degree*; `monthly_income` holds education levels such as *Secondary (K.C.S.E 8-4-4)*; `has_device` sometimes holds an email address. The pipeline stores each value under the header the file gives it, so those columns are only as trustworthy as the export. **Confirm with the data owner** before relying on disability, income or device figures.
 
 **4. Clean up test leftovers.** Runs made before the single-write build wrote every log row twice. Preview, then delete, the duplicates (participants are unaffected):
 
@@ -356,7 +367,7 @@ In n8n, also delete stale duplicate workflow copies and any execution stuck on *
 | Postgres: `SSL/TLS required` or `connection is insecure` | Neon needs SSL | Set the credential's SSL to **Require** |
 | Postgres: `getaddrinfo ENOTFOUND` / `ECONNREFUSED` | Wrong host. From n8n *inside Docker* the sandbox host is `postgres-pathways` port `5432`, not `localhost:5434` | Fix the host (section 4 table) |
 | Postgres: `password authentication failed` | Wrong password, or `.env` was edited after the volume was created | See section 9 (`.env` passwords) |
-| `column "…" does not exist` (in `ingestion_log.error_message`) | The target database's schema is older than the workflow expects | Apply `sql/migrations/0001_add_source_system.sql` (or build a fresh DB from `sql/reporting_schema.sql`) |
+| `column "region" of relation "participants" does not exist` (or `source_system`, or any other column) in `ingestion_log.error_message` | The target database's schema is older than the workflow expects | Apply the missing migrations from section 3 (`0001`, `0002`), or build a fresh DB from `sql/reporting_schema.sql`. Nothing is half-inserted; just run again |
 | `JavaScript heap out of memory`, n8n restarts | Shouldn't happen with this design (it peaked ~1 GB) | Report it with the n8n log; check that the chunk loader was imported (a run without it would load the whole file in memory) |
 | A window takes > 5 min, or the run looks frozen | Slow network to the database, or a stuck connection | Wait up to 45 min total; if rows stop growing for 5+ min, stop the execution and run again — it's safe |
 | Port 5678 already in use | Another n8n or app is using it | Change `N8N_PORT` in `.env` (Path A) or run `n8n start` after setting `N8N_PORT` (Path B) |

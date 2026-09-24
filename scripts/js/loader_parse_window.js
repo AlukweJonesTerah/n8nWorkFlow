@@ -56,6 +56,32 @@ const ALIASES = {
   cluster: ['cluster'],
   label: ['label'],
   serial_no: ['serial no', 'serial number', 'sno', 'sn', 'no'],
+  // Source columns that used to land only in extra_json. Each maps to a
+  // participants column of the same name (matched via its normalised header),
+  // and gets the default trim-only cleaning — no semantics are guessed for them.
+  region: [],
+  region_group: [],
+  assistive_device: [],
+  primary_language: [],
+  employment_status: [],
+  income_activity: [],
+  monthly_income: [],
+  internet_frequency: [],
+  device_used: [],
+  self_rated_digital_skill: [],
+  cdc_name: [],
+  cdc_phone: [],
+  institution_level: [],
+  trainer_level: [],
+  course_taken: [],
+  course_category: [],
+  where_course_taken: [],
+  date_trained: [],
+  kictanet_cluster: [],
+  has_device: [],
+  internet_type: [],
+  source: [],
+  partner: [],
 };
 
 function normalize(value) {

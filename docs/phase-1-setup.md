@@ -1,5 +1,7 @@
 # Phase 1: Connect n8n to PostgreSQL
 
+> **Historical.** This is the Phase 1 connectivity write-up from 2026-09-08. For the current step-by-step setup (Docker or not, credentials, importing and running the workflows, what to do afterwards) see [`setup-and-run.md`](setup-and-run.md); for how the workflows work see [`data4-workflow.md`](data4-workflow.md).
+
 This phase proves the database connection before we add Google Drive file parsing.
 
 ## Status: connectivity verified (2026-09-08)
@@ -40,7 +42,7 @@ The local stack contains:
 - `n8n`, available on port `5678`;
 - `postgres-n8n`, used only for n8n internal data;
 - `postgres-reporting`, a **local sandbox** that mirrors the real `ingest`/`app` schema so the workflow can be built and tested without writing to the shared remote database; and
-- `postgres-pathways`, a second local sandbox with the same schema, standing in for the Pathways-only database (the pipeline now dual-writes to both — see `docs/data4-workflow.md`) until that database is actually provisioned and has real credentials.
+- `postgres-pathways`, a second local sandbox with the same schema, standing in for the Pathways-only database. That database has since been provisioned on Neon and is now the pipeline's single write target (see `docs/data4-workflow.md`), so these two sandboxes are optional.
 
 The mirrored schema is applied automatically the first time the reporting volume is created. To inspect the local sandbox directly:
 

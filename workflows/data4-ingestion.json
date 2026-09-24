@@ -3,7 +3,7 @@
   "name": "Pathways Ingestion - Drive + OneDrive to ingest.participants",
   "nodes": [
     {
-      "id": "36708862-047c-4355-bb3e-39d17106e7be",
+      "id": "2354699c-c293-445f-aa02-9ca331ceb120",
       "name": "Manual Trigger",
       "type": "n8n-nodes-base.manualTrigger",
       "typeVersion": 1,
@@ -14,7 +14,7 @@
       "parameters": {}
     },
     {
-      "id": "a68286b5-e272-4ff6-91ae-8c0efb7dcf1b",
+      "id": "ec077b2a-2224-4246-9ef9-8b437027405f",
       "name": "Schedule Trigger (Weekdays 7am)",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
@@ -35,7 +35,7 @@
       "notes": "Runs automatically at 7:00 AM Nairobi time (GENERIC_TIMEZONE in .env/compose.yaml), Monday-Friday. Manual Trigger is left in place alongside it for on-demand testing."
     },
     {
-      "id": "14bca3a5-8e26-40c4-9bd9-c39c13889dc2",
+      "id": "cd89ad7d-69b9-4b40-a364-f690f7700d78",
       "name": "Start Run",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -50,7 +50,7 @@
       }
     },
     {
-      "id": "eaf1e439-76cd-469c-ae84-33ba5c1a6f04",
+      "id": "8df51de5-b12c-45df-85f8-de7a1df21a7e",
       "name": "List Consolidated Data Files",
       "type": "n8n-nodes-base.googleDrive",
       "typeVersion": 3,
@@ -84,7 +84,7 @@
       "onError": "continueErrorOutput"
     },
     {
-      "id": "bbcba4e5-d5ab-4861-82e2-91c2fbd6171a",
+      "id": "132633f9-c6b6-4c70-954f-78d7978642ae",
       "name": "Record Source Failure: Google Drive",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -100,7 +100,7 @@
       "notes": "Fed by List Consolidated Data Files' error output. Only runs if that node fails (bad credential, revoked token, folder not found, etc)."
     },
     {
-      "id": "1152021f-47f9-4bee-97d6-1c00f4bc3c77",
+      "id": "1fa6c2c1-b416-4ee1-a84b-927759a954a9",
       "name": "Tag Source: Google Drive",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -115,7 +115,7 @@
       }
     },
     {
-      "id": "1c116c3f-8f17-4542-9003-335efc562962",
+      "id": "50ffc54a-0bde-4a65-a157-6fd3f5574d09",
       "name": "Keep CSV or XLSX",
       "type": "n8n-nodes-base.filter",
       "typeVersion": 2.2,
@@ -154,7 +154,7 @@
       }
     },
     {
-      "id": "8a48f774-9ae5-46e8-ad5f-e0773cede311",
+      "id": "1725e995-7591-4ec3-8336-cc58b15ae5ca",
       "name": "List OneDrive Files",
       "type": "n8n-nodes-base.microsoftOneDrive",
       "typeVersion": 1.1,
@@ -178,7 +178,7 @@
       "onError": "continueErrorOutput"
     },
     {
-      "id": "5ed5c352-39a5-4a5a-ab65-b006976b4fcb",
+      "id": "c6f6bcc1-ee2d-46fe-984e-a49ba3aa4235",
       "name": "Record Source Failure: OneDrive",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -194,7 +194,7 @@
       "notes": "Fed by List OneDrive Files' error output. Only runs if that node fails (bad credential, revoked token, folder not found, etc)."
     },
     {
-      "id": "e0e5e99a-5c7e-47a4-afe9-40bf12f2a5dc",
+      "id": "a17befc1-86a1-429f-bbad-d5ffb1bfa7ee",
       "name": "Tag Source: OneDrive",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -210,7 +210,7 @@
       "notes": "Maps OneDrive/Graph's field names onto the same shape the Google Drive branch uses (modifiedTime, mimeType, parents; size passes through as-is) so the shared nodes downstream don't need to know which source they're looking at."
     },
     {
-      "id": "eb5a5cf0-0452-4d74-b52c-47aa616e6f30",
+      "id": "86751798-8903-47d5-8797-cef0d59de7cc",
       "name": "Keep CSV or XLSX (OneDrive)",
       "type": "n8n-nodes-base.filter",
       "typeVersion": 2.2,
@@ -249,7 +249,7 @@
       }
     },
     {
-      "id": "f7ad4949-ff5a-4a1c-bb27-4a6511fb365d",
+      "id": "08eb554e-5173-4d9b-a1f6-9e37a16a298e",
       "name": "Limit to 1 File (OneDrive, first test)",
       "type": "n8n-nodes-base.limit",
       "typeVersion": 1,
@@ -264,7 +264,7 @@
       "notes": "Acceptance test: caps this run to one OneDrive file. Delete or disable this node once the single-file test passes."
     },
     {
-      "id": "8629accf-98f0-4bba-a4de-d7e584274a60",
+      "id": "50145b30-a637-4da8-a879-8bbd442084ee",
       "name": "Check All Sources Failed",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -280,7 +280,7 @@
       "notes": "Only executes when at least one source failed. Aborts the whole run (throws) only if every source failed; otherwise logs a degraded run to ingestion_log and lets the pipeline continue."
     },
     {
-      "id": "cb145d77-d2b2-4fe8-9e20-8f3d7dfa917b",
+      "id": "79982ccc-545f-45cb-b06c-c268fc575d92",
       "name": "Init Load State",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -296,7 +296,7 @@
       "notes": "Collapses all listed files into ONE loop-state item. Two knobs at the top of the code: CHUNK_BYTES (window size, default 8MB) and MAX_ROWS (0 = load everything; set e.g. 5000 for a quick test against a real database)."
     },
     {
-      "id": "e356178e-4888-4887-b22e-c7834bcae9cf",
+      "id": "24d89625-a3f2-4e26-87f1-691ed4ce2c9a",
       "name": "Load Chunk",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.1,
@@ -319,7 +319,7 @@
       "notes": "Runs the 'Pathways Chunk Loader' workflow once per ~8MB window. Its memory is released when it returns, which is what keeps this run flat instead of growing with the file. If the workflow ID shown here doesn't resolve after importing through the editor UI, re-select the loader from the dropdown."
     },
     {
-      "id": "b2c2fb25-9384-4d17-a5f9-5390104fef5a",
+      "id": "92d32969-ed9d-4cf8-81aa-7abfe84fbf65",
       "name": "More Work?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
@@ -337,7 +337,7 @@
           },
           "conditions": [
             {
-              "id": "35a74f9f-aa3e-43b0-a225-8f3e72e14cfc",
+              "id": "273da574-f4e4-4133-9da1-3f8f1c39d523",
               "leftValue": "={{ $json.allDone }}",
               "rightValue": "",
               "operator": {
@@ -354,7 +354,7 @@
       "notes": "allDone is false while any file still has bytes left to load \u2014 loops back into Load Chunk with the updated state."
     },
     {
-      "id": "33437225-f6e0-4433-b6e8-a9c97e0cdb0b",
+      "id": "0627bc34-b5cf-43cb-8483-9d9d1d93cbc8",
       "name": "Emit Unmapped Columns",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -369,7 +369,7 @@
       }
     },
     {
-      "id": "76c69e3f-8f93-4b35-9eaa-153ba9d44af9",
+      "id": "f7deb81b-cd7a-4f6b-86f3-87145e39cc5c",
       "name": "Emit File Result",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -384,7 +384,7 @@
       }
     },
     {
-      "id": "db8f5bb0-0f33-48eb-9e50-1012b2f8ca06",
+      "id": "83587704-eeda-41ee-9762-99d74652be9d",
       "name": "Insert Unmapped Column Log",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
@@ -407,7 +407,7 @@
       }
     },
     {
-      "id": "091ab339-654d-4703-bccd-33e3b776e3bd",
+      "id": "900798e8-f8fd-4f69-ab2f-88dde8770189",
       "name": "Upsert Drive File State",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
@@ -430,7 +430,7 @@
       }
     },
     {
-      "id": "362eaccb-6b10-4ef9-92ee-46be0d87148e",
+      "id": "acf4cb01-65f6-4fe3-8007-f7aea022515b",
       "name": "Insert Ingestion Log",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
@@ -453,7 +453,7 @@
       }
     },
     {
-      "id": "993cedab-3f09-4d30-b35c-fe7bebbbdd07",
+      "id": "13c7b18e-db99-42f9-afd6-ebd79980d16b",
       "name": "Mark Dashboard Dirty",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
@@ -477,7 +477,7 @@
       "notes": "Bumps app.dashboard_refresh_state once a file has landed rows on the primary database, so Superset (or anything reading that table) can tell new data landed. Only covers our side of the bookkeeping \u2014 still need Superset's own cache/refresh call wired in once its URL and credentials are available."
     },
     {
-      "id": "17cfec48-bc44-4c5c-9dcf-157e5768c15f",
+      "id": "19b6dc73-9976-492b-ad8d-8d4e9dab7ad7",
       "name": "Setup Notes",
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
@@ -488,7 +488,7 @@
       "parameters": {
         "width": 560,
         "height": 330,
-        "content": "## Before running\n1. Import **both** workflows: `pathways-chunk-loader.json` first, then this one (see docs/data4-workflow.md \u2014 `n8n import:workflow` keeps the IDs this workflow expects; the editor's Import button assigns new ones and you'd re-pick the loader in **Load Chunk**).\n2. Run `sql/migrations/0001_add_source_system.sql` against BOTH Postgres targets \u2014 the `source_system` column is new on both.\n3. Credentials: Google Drive OAuth2 on **List Consolidated Data Files** (and on **Fetch Range (Google Drive)** in the loader); Microsoft OneDrive OAuth2 on **List OneDrive Files**; **ICTA Reporting PostgreSQL** on every Postgres node not named \"(Pathways DB)\"; **Pathways-Only PostgreSQL** on the ones that are.\n4. Set `folderId` on **List OneDrive Files** to the real OneDrive folder ID.\n5. First real-database run? Set `MAX_ROWS` in **Init Load State** to something small (e.g. 5000), check ingest.participants, then set it back to 0 for the full load.\n\nWrites to the shared `ingest`/`app` schema on the real reporting DB \u2014 test against the local `postgres-reporting` sandbox first if unsure.\n\n**Mark Dashboard Dirty** only updates our own bookkeeping table (`app.dashboard_refresh_state`) \u2014 it does not call Superset yet."
+        "content": "## Before running\n1. Import **both** workflows: `pathways-chunk-loader.json` first, then this one (see docs/data4-workflow.md \u2014 `n8n import:workflow` keeps the IDs this workflow expects; the editor's Import button assigns new ones and you'd re-pick the loader in **Load Chunk**).\n2. BEFORE importing, make sure the target database has the columns the loader inserts: run `sql/migrations/0001_add_source_system.sql` and `0002_add_participant_source_columns.sql` if it predates them (a schema built from the current `sql/reporting_schema.sql` already has both).\n3. Credentials: Google Drive OAuth2 on **List Consolidated Data Files** (and on **Fetch Range (Google Drive)** in the loader); Microsoft OneDrive OAuth2 on **List OneDrive Files**; **Pathways-Only PostgreSQL** on every Postgres node.\n4. Set `folderId` on **List OneDrive Files** to the real OneDrive folder ID.\n5. First real-database run? Set `MAX_ROWS` in **Init Load State** to something small (e.g. 5000), check ingest.participants, then set it back to 0 for the full load.\n\nWrites to the `ingest`/`app` schema of whichever database the Postgres credential points at (today: the Pathways-only Neon database).\n\n**Mark Dashboard Dirty** only updates our own bookkeeping table (`app.dashboard_refresh_state`) \u2014 it does not call Superset yet."
       }
     }
   ],

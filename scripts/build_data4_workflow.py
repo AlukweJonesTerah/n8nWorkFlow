@@ -243,8 +243,41 @@ PARTICIPANT_COLUMNS = [
     "device_description", "education_level", "internet_access", "trainer_name", "trainer_phone",
     "follow_up_consent", "remarks", "username", "completion_date", "registration_date",
     "training_time", "quiz_average", "percent_complete", "program_cohort", "cluster", "label",
-    "serial_no", "extra_json",
+    "serial_no",
+    # Added by sql/migrations/0002_add_participant_source_columns.sql — the
+    # source-file columns that previously only lived inside extra_json.
+    "region", "region_group", "assistive_device", "primary_language", "employment_status",
+    "income_activity", "monthly_income", "internet_frequency", "device_used",
+    "self_rated_digital_skill", "cdc_name", "cdc_phone", "institution_level", "trainer_level",
+    "course_taken", "course_category", "where_course_taken", "date_trained", "kictanet_cluster",
+    "has_device", "internet_type", "source", "partner",
+    "extra_json",
 ]
+
+# Columns the loader fills from row metadata rather than from a source column.
+_PARTICIPANT_METADATA_COLUMNS = {
+    "row_hash", "source_system", "drive_file_id", "source_file", "source_sheet", "source_row_number", "extra_json",
+}
+
+
+def _check_participant_columns_match_mapping():
+    """The loader's ALIASES table (JS) and PARTICIPANT_COLUMNS (SQL) are edited
+    separately. A field in ALIASES with no SQL column would be silently dropped
+    by the insert; a SQL column with no ALIASES entry would always be NULL. Fail
+    the build instead."""
+    import re
+    js = open(os.path.join(HERE, "js", "loader_parse_window.js"), encoding="utf-8").read()
+    block = js[js.index("const ALIASES = {"):js.index("function normalize")]
+    alias_fields = set(re.findall(r"^  (\w+): \[", block, flags=re.M))
+    sql_fields = set(PARTICIPANT_COLUMNS) - _PARTICIPANT_METADATA_COLUMNS
+    if alias_fields != sql_fields:
+        raise SystemExit(
+            "ALIASES (scripts/js/loader_parse_window.js) and PARTICIPANT_COLUMNS disagree — "
+            f"only in ALIASES: {sorted(alias_fields - sql_fields)}; only in PARTICIPANT_COLUMNS: {sorted(sql_fields - alias_fields)}"
+        )
+
+
+_check_participant_columns_match_mapping()
 
 UNMAPPED_COLUMNS_LOG_COLUMNS = [
     "drive_file_id", "file_name", "sheet_name", "raw_column_name", "normalized_column_name",
@@ -795,18 +828,30 @@ wf.sticky(
     "(see docs/data4-workflow.md — `n8n import:workflow` keeps the IDs this workflow "
     "expects; the editor's Import button assigns new ones and you'd re-pick the "
     "loader in **Load Chunk**).\n"
-    "2. Run `sql/migrations/0001_add_source_system.sql` against BOTH Postgres targets — "
-    "the `source_system` column is new on both.\n"
-    "3. Credentials: Google Drive OAuth2 on **List Consolidated Data Files** (and on "
+    + ("2. BEFORE importing, run `sql/migrations/0001_add_source_system.sql` and "
+       "`0002_add_participant_source_columns.sql` against BOTH Postgres targets — the "
+       "loader's INSERT names those columns.\n"
+       if DUAL_WRITE else
+       "2. BEFORE importing, make sure the target database has the columns the loader "
+       "inserts: run `sql/migrations/0001_add_source_system.sql` and "
+       "`0002_add_participant_source_columns.sql` if it predates them (a schema built "
+       "from the current `sql/reporting_schema.sql` already has both).\n")
+    + "3. Credentials: Google Drive OAuth2 on **List Consolidated Data Files** (and on "
     "**Fetch Range (Google Drive)** in the loader); Microsoft OneDrive OAuth2 on "
-    "**List OneDrive Files**; **ICTA Reporting PostgreSQL** on every Postgres node not "
-    "named \"(Pathways DB)\"; **Pathways-Only PostgreSQL** on the ones that are.\n"
-    "4. Set `folderId` on **List OneDrive Files** to the real OneDrive folder ID.\n"
+    "**List OneDrive Files**; "
+    + ("**ICTA Reporting PostgreSQL** on every Postgres node not named \"(Pathways DB)\"; "
+       "**Pathways-Only PostgreSQL** on the ones that are.\n"
+       if DUAL_WRITE else
+       "**Pathways-Only PostgreSQL** on every Postgres node.\n")
+    + "4. Set `folderId` on **List OneDrive Files** to the real OneDrive folder ID.\n"
     "5. First real-database run? Set `MAX_ROWS` in **Init Load State** to something small "
     "(e.g. 5000), check ingest.participants, then set it back to 0 for the full load.\n\n"
-    "Writes to the shared `ingest`/`app` schema on the real reporting DB — test against "
-    "the local `postgres-reporting` sandbox first if unsure.\n\n"
-    "**Mark Dashboard Dirty** only updates our own bookkeeping table "
+    + ("Writes to the shared `ingest`/`app` schema on the real reporting DB — test against "
+       "the local `postgres-reporting` sandbox first if unsure.\n\n"
+       if DUAL_WRITE else
+       "Writes to the `ingest`/`app` schema of whichever database the Postgres credential "
+       "points at (today: the Pathways-only Neon database).\n\n")
+    + "**Mark Dashboard Dirty** only updates our own bookkeeping table "
     "(`app.dashboard_refresh_state`) — it does not call Superset yet.",
     [-40, -140], 560, 330,
 )
