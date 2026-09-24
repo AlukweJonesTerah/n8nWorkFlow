@@ -9,6 +9,9 @@ participants.json
 training_sessions_summary.json
 unmapped_columns_log.json
 
+# Database dumps (contain personal data)
+backups/
+
 # Python bytecode
 __pycache__/
 *.pyc

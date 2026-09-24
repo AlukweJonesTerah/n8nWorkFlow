@@ -3,7 +3,7 @@
   "name": "Pathways Ingestion - Drive + OneDrive to ingest.participants",
   "nodes": [
     {
-      "id": "2354699c-c293-445f-aa02-9ca331ceb120",
+      "id": "f681d621-d24c-4082-a167-59d12aa19478",
       "name": "Manual Trigger",
       "type": "n8n-nodes-base.manualTrigger",
       "typeVersion": 1,
@@ -14,7 +14,7 @@
       "parameters": {}
     },
     {
-      "id": "ec077b2a-2224-4246-9ef9-8b437027405f",
+      "id": "eef0250b-8644-4f69-92f3-a69dc5ff7dd7",
       "name": "Schedule Trigger (Weekdays 7am)",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
@@ -35,7 +35,7 @@
       "notes": "Runs automatically at 7:00 AM Nairobi time (GENERIC_TIMEZONE in .env/compose.yaml), Monday-Friday. Manual Trigger is left in place alongside it for on-demand testing."
     },
     {
-      "id": "cd89ad7d-69b9-4b40-a364-f690f7700d78",
+      "id": "dc066cc9-beaa-401e-b151-8bd4fd408cec",
       "name": "Start Run",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -50,7 +50,7 @@
       }
     },
     {
-      "id": "8df51de5-b12c-45df-85f8-de7a1df21a7e",
+      "id": "9552c1d2-97c3-4f8a-8cb2-f08791bd4c7b",
       "name": "List Consolidated Data Files",
       "type": "n8n-nodes-base.googleDrive",
       "typeVersion": 3,
@@ -84,7 +84,7 @@
       "onError": "continueErrorOutput"
     },
     {
-      "id": "132633f9-c6b6-4c70-954f-78d7978642ae",
+      "id": "ce320f77-0684-41a8-9d8f-7a97b16d9cc1",
       "name": "Record Source Failure: Google Drive",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -100,7 +100,7 @@
       "notes": "Fed by List Consolidated Data Files' error output. Only runs if that node fails (bad credential, revoked token, folder not found, etc)."
     },
     {
-      "id": "1fa6c2c1-b416-4ee1-a84b-927759a954a9",
+      "id": "05ea6b7a-58fa-452d-8bb0-60e4a32c6a60",
       "name": "Tag Source: Google Drive",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -115,7 +115,7 @@
       }
     },
     {
-      "id": "50ffc54a-0bde-4a65-a157-6fd3f5574d09",
+      "id": "a614bf1a-3267-4988-9c70-2b39dac1108f",
       "name": "Keep CSV or XLSX",
       "type": "n8n-nodes-base.filter",
       "typeVersion": 2.2,
@@ -154,7 +154,7 @@
       }
     },
     {
-      "id": "1725e995-7591-4ec3-8336-cc58b15ae5ca",
+      "id": "1abee668-9958-4453-9ac4-10713604f6ce",
       "name": "List OneDrive Files",
       "type": "n8n-nodes-base.microsoftOneDrive",
       "typeVersion": 1.1,
@@ -178,7 +178,7 @@
       "onError": "continueErrorOutput"
     },
     {
-      "id": "c6f6bcc1-ee2d-46fe-984e-a49ba3aa4235",
+      "id": "16517bd9-d575-462a-b41c-3f40c6dd470b",
       "name": "Record Source Failure: OneDrive",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -194,7 +194,7 @@
       "notes": "Fed by List OneDrive Files' error output. Only runs if that node fails (bad credential, revoked token, folder not found, etc)."
     },
     {
-      "id": "a17befc1-86a1-429f-bbad-d5ffb1bfa7ee",
+      "id": "e63ed58d-89dd-4e04-a3c1-63512b02d74c",
       "name": "Tag Source: OneDrive",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -210,7 +210,7 @@
       "notes": "Maps OneDrive/Graph's field names onto the same shape the Google Drive branch uses (modifiedTime, mimeType, parents; size passes through as-is) so the shared nodes downstream don't need to know which source they're looking at."
     },
     {
-      "id": "86751798-8903-47d5-8797-cef0d59de7cc",
+      "id": "860572ad-b53a-4759-a607-edcbadc518f8",
       "name": "Keep CSV or XLSX (OneDrive)",
       "type": "n8n-nodes-base.filter",
       "typeVersion": 2.2,
@@ -249,7 +249,7 @@
       }
     },
     {
-      "id": "08eb554e-5173-4d9b-a1f6-9e37a16a298e",
+      "id": "dc3338dc-a048-46f5-9a58-3f515b7d20d5",
       "name": "Limit to 1 File (OneDrive, first test)",
       "type": "n8n-nodes-base.limit",
       "typeVersion": 1,
@@ -264,7 +264,7 @@
       "notes": "Acceptance test: caps this run to one OneDrive file. Delete or disable this node once the single-file test passes."
     },
     {
-      "id": "50145b30-a637-4da8-a879-8bbd442084ee",
+      "id": "34ed4057-d39d-40c7-8dce-9af9424138c2",
       "name": "Check All Sources Failed",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -280,7 +280,7 @@
       "notes": "Only executes when at least one source failed. Aborts the whole run (throws) only if every source failed; otherwise logs a degraded run to ingestion_log and lets the pipeline continue."
     },
     {
-      "id": "79982ccc-545f-45cb-b06c-c268fc575d92",
+      "id": "6f802bb0-0f34-4852-86d2-d70e3ccde316",
       "name": "Init Load State",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -296,7 +296,7 @@
       "notes": "Collapses all listed files into ONE loop-state item. Two knobs at the top of the code: CHUNK_BYTES (window size, default 8MB) and MAX_ROWS (0 = load everything; set e.g. 5000 for a quick test against a real database)."
     },
     {
-      "id": "24d89625-a3f2-4e26-87f1-691ed4ce2c9a",
+      "id": "a8880fa3-18c8-47fd-8993-b920fb002aa3",
       "name": "Load Chunk",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.1,
@@ -316,10 +316,13 @@
           "waitForSubWorkflow": true
         }
       },
-      "notes": "Runs the 'Pathways Chunk Loader' workflow once per ~8MB window. Its memory is released when it returns, which is what keeps this run flat instead of growing with the file. If the workflow ID shown here doesn't resolve after importing through the editor UI, re-select the loader from the dropdown."
+      "notes": "Runs the 'Pathways Chunk Loader' workflow once per ~8MB window. Its memory is released when it returns, which is what keeps this run flat instead of growing with the file. If the workflow ID shown here doesn't resolve after importing through the editor UI, re-select the loader from the dropdown.\n\nRetry On Fail is on (3 tries): a window is safe to repeat \u2014 it re-reads the same bytes and already-loaded rows are skipped by row_hash \u2014 so a one-off crash of n8n's task runner ('runner became unresponsive') doesn't end the whole load. A retried window can under-count rows_loaded in ingest.ingestion_log (its first attempt's inserts are counted as duplicates).",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
     },
     {
-      "id": "92d32969-ed9d-4cf8-81aa-7abfe84fbf65",
+      "id": "0caec13c-1a76-4afd-aa28-7369d617adcd",
       "name": "More Work?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
@@ -337,7 +340,7 @@
           },
           "conditions": [
             {
-              "id": "273da574-f4e4-4133-9da1-3f8f1c39d523",
+              "id": "90fb7c15-55b9-463b-bd56-9d7dbed674d4",
               "leftValue": "={{ $json.allDone }}",
               "rightValue": "",
               "operator": {
@@ -354,7 +357,7 @@
       "notes": "allDone is false while any file still has bytes left to load \u2014 loops back into Load Chunk with the updated state."
     },
     {
-      "id": "0627bc34-b5cf-43cb-8483-9d9d1d93cbc8",
+      "id": "b3ec2ce0-9dcd-4ef9-9e24-7c7bf59fa89c",
       "name": "Emit Unmapped Columns",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -369,7 +372,7 @@
       }
     },
     {
-      "id": "f7deb81b-cd7a-4f6b-86f3-87145e39cc5c",
+      "id": "29fd1e82-7e83-4dda-8b1a-efbc6086ea63",
       "name": "Emit File Result",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -384,7 +387,7 @@
       }
     },
     {
-      "id": "83587704-eeda-41ee-9762-99d74652be9d",
+      "id": "265bed8a-4aaf-4778-a69e-5e44e7523131",
       "name": "Insert Unmapped Column Log",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
@@ -407,7 +410,7 @@
       }
     },
     {
-      "id": "900798e8-f8fd-4f69-ab2f-88dde8770189",
+      "id": "8b4aec0c-1224-4ebb-aa94-b2f50881995d",
       "name": "Upsert Drive File State",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
@@ -430,7 +433,7 @@
       }
     },
     {
-      "id": "acf4cb01-65f6-4fe3-8007-f7aea022515b",
+      "id": "c6e65202-62b9-46b9-9e63-5f3f50767752",
       "name": "Insert Ingestion Log",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
@@ -453,7 +456,7 @@
       }
     },
     {
-      "id": "13c7b18e-db99-42f9-afd6-ebd79980d16b",
+      "id": "3ff57533-3667-4454-bda9-6db9ff089d2a",
       "name": "Mark Dashboard Dirty",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
@@ -477,7 +480,7 @@
       "notes": "Bumps app.dashboard_refresh_state once a file has landed rows on the primary database, so Superset (or anything reading that table) can tell new data landed. Only covers our side of the bookkeeping \u2014 still need Superset's own cache/refresh call wired in once its URL and credentials are available."
     },
     {
-      "id": "19b6dc73-9976-492b-ad8d-8d4e9dab7ad7",
+      "id": "05713563-7192-4146-abcf-b3c2a11425eb",
       "name": "Setup Notes",
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,

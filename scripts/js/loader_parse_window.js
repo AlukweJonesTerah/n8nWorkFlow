@@ -474,6 +474,11 @@ const unmappedSamples = Object.create(null);
 let ragged = 0;
 
 for (let r = 0; r < take; r++) {
+  // A window is ~26k rows of pure CPU work. Hand the task runner's event loop a
+  // turn every so often: if the machine is busy and the runner can't answer its
+  // heartbeat for too long, n8n kills it ("runner became unresponsive").
+  if (r > 0 && r % 1000 === 0) await new Promise((resolve) => setTimeout(resolve, 0));
+
   const vals = rowVals[r];
   const keys = rowKeys ? rowKeys[r] : header;
   if (!rowKeys && vals.length !== header.length) ragged++;

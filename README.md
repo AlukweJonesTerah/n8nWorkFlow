@@ -42,6 +42,12 @@ The workflow must not contain database passwords, Google OAuth secrets, or folde
 
 An importable implementation of this flow (Google Drive plus a Microsoft OneDrive source) lives in two workflows — [`workflows/data4-ingestion.json`](workflows/data4-ingestion.json) (lists files, drives the load loop) and [`workflows/pathways-chunk-loader.json`](workflows/pathways-chunk-loader.json) (loads one ~8 MB window of a file; called by the first). Large CSVs are streamed in byte ranges and bulk-inserted, so a 258 MB / 871k-row file loads without exhausting n8n's memory. See [`docs/data4-workflow.md`](docs/data4-workflow.md) for how it works and what to configure before running it.
 
+## Documentation
+
+- [`docs/setup-and-run.md`](docs/setup-and-run.md) — set up (with or without Docker), import the workflows, run them, change credentials, what to do afterwards.
+- [`docs/database-changes.md`](docs/database-changes.md) — how to change the database safely (columns, rows, migrations, backup/restore, undo), with the exact commands.
+- [`docs/data4-workflow.md`](docs/data4-workflow.md) — how the two workflows work and how to extend them.
+
 ## Canonical fields
 
 Mirrors `ingest.participants`: `national_id`, `full_name`, `first_name`, `last_name`, `gender`, `email`, `phone_number`, `age`, `age_group`, `county`, `sub_county`, `ward`, `village`, `organization`, `role`, `state_department`, `directorate`, `disability`, `disability_type`, `device_type`, `device_description`, `education_level`, `internet_access`, `trainer_name`, `trainer_phone`, `follow_up_consent`, `remarks`, `username`, `completion_date`, `registration_date`, `training_time`, `quiz_average`, `percent_complete`, plus `program_cohort`, `cluster`, `label`, `serial_no` for source-specific grouping, and the 23 source-file columns added by `sql/migrations/0002_add_participant_source_columns.sql` (`region`, `region_group`, `assistive_device`, `primary_language`, `employment_status`, `income_activity`, `monthly_income`, `internet_frequency`, `device_used`, `self_rated_digital_skill`, `cdc_name`, `cdc_phone`, `institution_level`, `trainer_level`, `course_taken`, `course_category`, `where_course_taken`, `date_trained`, `kictanet_cluster`, `has_device`, `internet_type`, `source`, `partner`).

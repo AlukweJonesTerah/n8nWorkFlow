@@ -70,6 +70,10 @@ services:
       GENERIC_TIMEZONE: ${GENERIC_TIMEZONE}
       TZ: ${GENERIC_TIMEZONE}
       N8N_RUNNERS_TASK_TIMEOUT: 3600
+      # Seconds the JS task runner may go without answering n8n's heartbeat before
+      # n8n kills it ("runner became unresponsive"). Default 30 is too tight when the
+      # machine is busy (Docker housekeeping, a big build, ...) while a window parses.
+      N8N_RUNNERS_HEARTBEAT_INTERVAL: 120
     volumes:
       - n8n-data:/home/node/.n8n
     depends_on:

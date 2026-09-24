@@ -134,7 +134,7 @@ The pipeline writes to **one** Postgres database — whichever your credential p
 > | [`0001_add_source_system.sql`](../sql/migrations/0001_add_source_system.sql) | `source_system` | `source_system` column |
 > | [`0002_add_participant_source_columns.sql`](../sql/migrations/0002_add_participant_source_columns.sql) | 23 source-file columns (`region`, `cdc_name`, `course_taken`, `partner`, …) | `partner` column |
 >
-> A database freshly built from the current `sql/reporting_schema.sql` has both. Both migrations are additive, instant, and safe to run twice.
+> A database freshly built from the current `sql/reporting_schema.sql` has both. Both migrations are additive, instant, and safe to run twice. **The exact command to run a migration file** (Neon, the Docker sandbox, or plain Postgres), how to check a database's level, and how to change columns or rows later are in [`database-changes.md`](database-changes.md).
 >
 > **Rows loaded before 0002** keep those 23 values inside `extra_json`. Either `TRUNCATE ingest.participants;` and reload (frees space immediately — the safe choice on a storage-capped plan), or run the optional [`0003_backfill_participant_source_columns.sql`](../sql/migrations/0003_backfill_participant_source_columns.sql) (read its storage warning first).
 
@@ -277,7 +277,7 @@ So **wait up to 45 minutes** before worrying. Times depend on the network distan
 
 **When to investigate:** no new rows for **5+ minutes**, or the run turns red. The error is in the execution and in `ingest.ingestion_log.error_message`; then see [Troubleshooting](#11-troubleshooting).
 
-**Do not** while it runs: re-import the workflows, press *Execute* a second time, stop Docker / close the n8n terminal, or put the machine to sleep.
+**Do not** while it runs: re-import the workflows, press *Execute* a second time, stop Docker / close the n8n terminal, or put the machine to sleep. **Also keep the machine quiet:** heavy work at the same time (a big build, Docker housekeeping such as `docker system df -v`, image pulls, large dumps) can starve n8n's code runner and make a window fail with `Task execution aborted because runner became unresponsive` (see Troubleshooting).
 
 **If a run is interrupted, just run it again.** Rows are de-duplicated by content hash, so already-loaded rows are skipped (it re-reads from the start, it doesn't resume) and nothing is duplicated.
 
@@ -301,6 +301,7 @@ SELECT status, rows_extracted, rows_loaded, unmapped_column_count
 | **Change the Google Drive folder** | Edit `CONSOLIDATED_DATA_FOLDER_ID` near the top of `scripts/build_data4_workflow.py`, rebuild, re-import. |
 | **Change the OneDrive folder** | Set `folderId` on the **List OneDrive Files** node. |
 | **Also write to the shared `icta_dashboard` database** | Build with `$env:PATHWAYS_DUAL_WRITE = 1` set (details in [data4-workflow.md](data4-workflow.md#write-target-one-database-dual-write-is-optional)); it needs its own credential and the migration applied there. |
+| **Change the database itself** (add / rename / drop a column, reload or fix rows, back up, undo) | Follow [`database-changes.md`](database-changes.md) — it has the exact commands for Neon, the Docker sandbox and plain Postgres, and the order things must happen in. |
 | **Change the database passwords in `.env` (Docker)** | The Postgres containers only read `.env` when their volume is first created. Changing it later does nothing to an existing database. Use `ALTER USER …` inside the container, or recreate the volume (which deletes its data). |
 | **Change `N8N_ENCRYPTION_KEY`** | **Don't.** All stored credentials become unreadable and would have to be re-created. |
 
@@ -369,6 +370,7 @@ In n8n, also delete stale duplicate workflow copies and any execution stuck on *
 | Postgres: `password authentication failed` | Wrong password, or `.env` was edited after the volume was created | See section 9 (`.env` passwords) |
 | `column "region" of relation "participants" does not exist` (or `source_system`, or any other column) in `ingestion_log.error_message` | The target database's schema is older than the workflow expects | Apply the missing migrations from section 3 (`0001`, `0002`), or build a fresh DB from `sql/reporting_schema.sql`. Nothing is half-inserted; just run again |
 | `JavaScript heap out of memory`, n8n restarts | Shouldn't happen with this design (it peaked ~1 GB) | Report it with the n8n log; check that the chunk loader was imported (a run without it would load the whole file in memory) |
+| `Problem in node 'Load Chunk': Task execution aborted because runner became unresponsive` (and `Task runner failed heartbeat check` in `docker logs`) | n8n's watchdog killed the code runner: it didn't answer its heartbeat for 30 s, almost always because the machine was too busy (other Docker/CPU-heavy work, low Docker CPU/RAM limit, sleep). It hits the *Parse Window* step of the loader | **Just click *Execute workflow* again** — it is safe (already-loaded rows are skipped). Keep the machine idle during the load. To make it resilient: the current workflows retry a failed window up to 3 times, the parser yields to the event loop, and `compose.yaml` sets `N8N_RUNNERS_HEARTBEAT_INTERVAL: 120` (apply with `docker compose up -d n8n`, when no load is running). If it still happens, give Docker Desktop more CPUs/RAM |
 | A window takes > 5 min, or the run looks frozen | Slow network to the database, or a stuck connection | Wait up to 45 min total; if rows stop growing for 5+ min, stop the execution and run again — it's safe |
 | Port 5678 already in use | Another n8n or app is using it | Change `N8N_PORT` in `.env` (Path A) or run `n8n start` after setting `N8N_PORT` (Path B) |
 | `docker compose up` fails: variable not set | `.env` is missing values | Fill in every line of `.env` (section A2) |

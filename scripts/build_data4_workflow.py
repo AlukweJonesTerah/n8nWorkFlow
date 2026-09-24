@@ -794,8 +794,13 @@ load_chunk = wf.add_node(
         "Runs the 'Pathways Chunk Loader' workflow once per ~8MB window. Its memory is released when "
         "it returns, which is what keeps this run flat instead of growing with the file. If the "
         "workflow ID shown here doesn't resolve after importing through the editor UI, re-select "
-        "the loader from the dropdown."
+        "the loader from the dropdown.\n\n"
+        "Retry On Fail is on (3 tries): a window is safe to repeat — it re-reads the same bytes and "
+        "already-loaded rows are skipped by row_hash — so a one-off crash of n8n's task runner "
+        "('runner became unresponsive') doesn't end the whole load. A retried window can under-count "
+        "rows_loaded in ingest.ingestion_log (its first attempt's inserts are counted as duplicates)."
     ),
+    extra={"retryOnFail": True, "maxTries": 3, "waitBetweenTries": 5000},
 )
 
 more_work = wf.add_node(
