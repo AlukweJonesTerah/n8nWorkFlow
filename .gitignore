@@ -1,1 +1,15 @@
 .env
+
+# Raw data exports/downloads — large, real participant data, never committed
+*.csv
+*.xlsx
+drive_file_state.json
+ingestion_log.json
+participants.json
+training_sessions_summary.json
+unmapped_columns_log.json
+
+# This n8n instance's credential IDs and the workflow copies wired with them
+# (see scripts/build_data4_workflow.py) — instance-specific, not for the repo
+scripts/credential_ids.local.json
+workflows/local/

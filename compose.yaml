@@ -69,6 +69,7 @@ services:
       N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
       GENERIC_TIMEZONE: ${GENERIC_TIMEZONE}
       TZ: ${GENERIC_TIMEZONE}
+      N8N_RUNNERS_TASK_TIMEOUT: 3600
     volumes:
       - n8n-data:/home/node/.n8n
     depends_on:

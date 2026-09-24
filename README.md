@@ -40,7 +40,7 @@ A separate pre-existing `analytics` schema holds large amounts of data (hundreds
 
 The workflow must not contain database passwords, Google OAuth secrets, or folder IDs. Store those in n8n credentials and environment variables.
 
-An importable implementation of this flow for Data 1-4 (plus a Microsoft OneDrive source) lives at [`workflows/data4-ingestion.json`](workflows/data4-ingestion.json) — see [`docs/data4-workflow.md`](docs/data4-workflow.md) for what it does and what to configure before running it.
+An importable implementation of this flow (Google Drive plus a Microsoft OneDrive source) lives in two workflows — [`workflows/data4-ingestion.json`](workflows/data4-ingestion.json) (lists files, drives the load loop) and [`workflows/pathways-chunk-loader.json`](workflows/pathways-chunk-loader.json) (loads one ~8 MB window of a file; called by the first). Large CSVs are streamed in byte ranges and bulk-inserted, so a 258 MB / 871k-row file loads without exhausting n8n's memory. See [`docs/data4-workflow.md`](docs/data4-workflow.md) for how it works and what to configure before running it.
 
 ## Canonical fields
 

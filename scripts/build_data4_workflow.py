@@ -1,71 +1,222 @@
 """
-Generates workflows/data4-ingestion.json — an importable n8n workflow.
+Generates the two importable n8n workflows that make up the ingestion pipeline:
 
-Regenerate after editing this script:
+    workflows/data4-ingestion.json        parent: lists files, drives the load loop
+    workflows/pathways-chunk-loader.json  child: loads ONE window of ONE file
+
+Regenerate after editing this script or anything under scripts/js/:
     python scripts/build_data4_workflow.py
+
+Why two workflows: the consolidated CSV is ~258MB / ~871k rows. Downloading it
+whole, turning it into 871k n8n items and inserting them one at a time ran n8n
+out of memory (2GB heap) and made the Code node time out. Instead the parent
+walks the file in ~8MB byte ranges and calls the child once per range; the
+child's execution (chunk text, row batches) is freed as soon as it returns, so
+the parent only ever holds a few KB of loop state.
 """
+import copy
 import json
 import os
 import uuid
 
-OUT_PATH = os.path.join(os.path.dirname(__file__), "..", "workflows", "data4-ingestion.json")
+HERE = os.path.dirname(__file__)
+OUT_DIR = os.path.join(HERE, "..", "workflows")
+PARENT_PATH = os.path.join(OUT_DIR, "data4-ingestion.json")
+LOADER_PATH = os.path.join(OUT_DIR, "pathways-chunk-loader.json")
 
-POSTGRES_CREDENTIAL = {"id": "REPLACE_ME", "name": "ICTA Reporting PostgreSQL"}
-PATHWAYS_CREDENTIAL = {"id": "REPLACE_ME", "name": "Pathways-Only PostgreSQL"}
-GDRIVE_CREDENTIAL = {"id": "REPLACE_ME", "name": "Google Drive - Pathways"}
-ONEDRIVE_CREDENTIAL = {"id": "REPLACE_ME", "name": "OneDrive - Pathways"}
+# Fixed IDs so `n8n import:workflow` upserts instead of piling up copies, and so
+# the parent's "Load Chunk" node can point at the loader without a manual pick.
+# (Importing through the editor UI assigns new IDs — see docs/data4-workflow.md.)
+PARENT_WORKFLOW_ID = "pwIngestion000001"
+LOADER_WORKFLOW_ID = "pwChunkLoader0001"
+
+# Credential IDs are per-n8n-instance, so the committed workflows/*.json carry
+# placeholders. To get re-imports that come out already wired up (instead of
+# re-picking ~15 credentials in the editor each time), put your instance's IDs
+# in scripts/credential_ids.local.json (gitignored) — any of these keys:
+#   {"googleDrive": {"id": "...", "name": "..."}, "onedrive": {...},
+#    "postgresShared": {...}, "postgresPathways": {...}}
+# and the build also writes wired copies to workflows/local/ (gitignored).
+_DEFAULT_CREDENTIALS = {
+    "googleDrive": {"id": "REPLACE_ME", "name": "Google Drive - Pathways"},
+    "onedrive": {"id": "REPLACE_ME", "name": "OneDrive - Pathways"},
+    "postgresShared": {"id": "REPLACE_ME", "name": "ICTA Reporting PostgreSQL"},
+    "postgresPathways": {"id": "REPLACE_ME", "name": "Pathways-Only PostgreSQL"},
+}
+_local_credentials_path = os.path.join(HERE, "credential_ids.local.json")
+LOCAL_CREDENTIALS = {}
+if os.path.exists(_local_credentials_path):
+    with open(_local_credentials_path, encoding="utf-8") as _f:
+        LOCAL_CREDENTIALS = json.load(_f)
+
+GDRIVE_CREDENTIAL = _DEFAULT_CREDENTIALS["googleDrive"]
+ONEDRIVE_CREDENTIAL = _DEFAULT_CREDENTIALS["onedrive"]
+POSTGRES_CREDENTIAL = _DEFAULT_CREDENTIALS["postgresShared"]
+PATHWAYS_CREDENTIAL = _DEFAULT_CREDENTIALS["postgresPathways"]
+LOCAL_OUT_DIR = os.path.join(OUT_DIR, "local")
+
+# Which databases every write goes to. Today that's the Pathways-only Neon
+# database alone. Set PATHWAYS_DUAL_WRITE=1 (or flip the default) to ALSO write
+# to the shared ICTA+Pathways database (icta_dashboard) — that needs
+# sql/migrations/0001_add_source_system.sql applied there and its own n8n
+# credential, and it doubles the load time.
+DUAL_WRITE = os.environ.get("PATHWAYS_DUAL_WRITE", "").lower() in ("1", "true", "yes")
+
+# (node-name suffix, credential) per database. The first entry is the "primary":
+# its inserted-row count is what ingestion_log.rows_loaded reports, and it's the
+# database Mark Dashboard Dirty bumps. Single-target nodes keep the plain names
+# (no suffix) so their names don't change if dual write is switched on later.
+if DUAL_WRITE:
+    TARGETS = [("", POSTGRES_CREDENTIAL), (" (Pathways DB)", PATHWAYS_CREDENTIAL)]
+else:
+    TARGETS = [("", PATHWAYS_CREDENTIAL)]
 
 ONEDRIVE_FOLDER_ID_PLACEHOLDER = "REPLACE_WITH_ONEDRIVE_FOLDER_ID"
 
-# Real folder IDs for Data 1-4, read off the Drive URLs in the original
-# screenshots. All four sit directly under "Pathways Consolidated Data" and
-# each holds its files directly (no further subfolders), so one Advanced
-# Search query covering all four "in parents" clauses replaces what would
-# otherwise be four separate list-branches.
+# Historical Data 1-4 folder IDs (kept for reference / easy revert), copied
+# directly from each folder's address bar in Drive (not read off a
+# screenshot — that's how Data 1 and Data 3 ended up with l/I swapped in an
+# earlier version of this dict and started 404ing with "The resource you are
+# requesting could not be found"). All four sat directly under "Pathways
+# Consolidated Data" and each held its files directly (no further
+# subfolders).
 DATA_FOLDER_IDS = {
-    "Data 1": "1FelonTn8boY43ROkP-iliYe2X6HDx2IQ",
+    "Data 1": "1FelonTn8boY43ROkP-iliYe2X6HDx2lQ",
     "Data 2": "1s7d7kyN0Gf7HQHC_WyEzgQN-v-7GmN5Q",
-    "Data 3": "1c31XZfHgt86rTHK6hCoSIx66NHQFlotv",
+    "Data 3": "1c31XZfHgt86rTHK6hCoSlx66NHQFIotv",
     "Data 4": "1XdZeo93ULC8Ysn6HynK3GpFHjCmD6c79",
 }
-DATA_FOLDERS_QUERY = "(" + " or ".join(
-    f"'{fid}' in parents" for fid in DATA_FOLDER_IDS.values()
-) + ")"
+
+# As of 2026-09-22, Data 1-4 are superseded by a single "CONSOLIDATED DATA"
+# folder (sibling to Data 1-4 under "Pathways Consolidated Data") holding one
+# file, 20_million_by_2032tbl.csv (~258MB, owned by markouma72@gmail.com).
+# The query now targets this folder instead of OR'ing across Data 1-4.
+CONSOLIDATED_DATA_FOLDER_ID = "101fYYremtVXyIa-wQTBuwJDv66d0zQwB"
+DATA_FOLDERS_QUERY = f"('{CONSOLIDATED_DATA_FOLDER_ID}' in parents)"
 
 
 def nid():
     return str(uuid.uuid4())
 
 
-def rlc(mode, value):
-    return {"__rl": True, "mode": mode, "value": value}
-
-
-def string_condition(left_expr, right_value, case_sensitive=True):
-    return {
-        "conditions": {
-            "options": {
-                "caseSensitive": case_sensitive,
-                "leftValue": "",
-                "typeValidation": "strict",
-            },
-            "conditions": [
-                {
-                    "leftValue": left_expr,
-                    "rightValue": right_value,
-                    "operator": {"type": "string", "operation": "equals"},
-                }
-            ],
-            "combinator": "and",
-        }
-    }
+def read_js(name):
+    """Larger Code-node bodies live in scripts/js/ so they can be run and
+    tested with plain Node instead of being edited as Python string literals."""
+    with open(os.path.join(HERE, "js", name), encoding="utf-8") as f:
+        return f.read()
 
 
 EXTENSION_EXPR = "={{ $json.name.split('.').pop().toLowerCase() }}"
 
+
+class Workflow:
+    def __init__(self, workflow_id, name, settings):
+        self.id = workflow_id
+        self.name = name
+        self.settings = settings
+        self.nodes = []
+        self.connections = {}
+
+    def add_node(self, name, type_, type_version, parameters, position, credentials=None, notes=None, on_error=None, extra=None):
+        node = {
+            "id": nid(),
+            "name": name,
+            "type": type_,
+            "typeVersion": type_version,
+            "position": position,
+            "parameters": parameters,
+        }
+        if credentials:
+            node["credentials"] = credentials
+        if notes:
+            node["notes"] = notes
+        if on_error:
+            node["onError"] = on_error
+        if extra:
+            node.update(extra)
+        self.nodes.append(node)
+        return name
+
+    def code(self, name, js, position, notes=None):
+        return self.add_node(
+            name, "n8n-nodes-base.code", 2,
+            {"mode": "runOnceForAllItems", "language": "javaScript", "jsCode": js},
+            position, notes=notes,
+        )
+
+    def connect(self, src, dst, src_output=0, dst_input=0):
+        self.connections.setdefault(src, {"main": []})
+        out_list = self.connections[src]["main"]
+        while len(out_list) <= src_output:
+            out_list.append([])
+        out_list[src_output].append({"node": dst, "type": "main", "index": dst_input})
+
+    def sticky(self, content, position, width, height):
+        self.nodes.append({
+            "id": nid(),
+            "name": "Setup Notes",
+            "type": "n8n-nodes-base.stickyNote",
+            "typeVersion": 1,
+            "position": position,
+            "parameters": {"width": width, "height": height, "content": content},
+        })
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "nodes": self.nodes,
+            "connections": self.connections,
+            "active": False,
+            "settings": self.settings,
+            "pinData": {},
+        }
+
+    def wired(self, overrides):
+        """to_dict() with placeholder credentials swapped for this instance's real ones."""
+        replacements = {
+            json.dumps(_DEFAULT_CREDENTIALS[role], sort_keys=True): ref
+            for role, ref in overrides.items()
+            if role in _DEFAULT_CREDENTIALS
+        }
+        data = copy.deepcopy(self.to_dict())
+        for node in data["nodes"]:
+            for cred_type, ref in (node.get("credentials") or {}).items():
+                node["credentials"][cred_type] = replacements.get(json.dumps(ref, sort_keys=True), ref)
+        return data
+
+    def write(self, path, data=None):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data if data is not None else self.to_dict(), f, indent=2)
+        print(f"Wrote {os.path.abspath(path)}  ({len(self.nodes)} nodes)")
+
+
+def if_node_conditions(*conditions):
+    return {
+        "conditions": {
+            "options": {"caseSensitive": False, "leftValue": "", "typeValidation": "strict", "version": 2},
+            "conditions": list(conditions),
+            "combinator": "and",
+        },
+        "options": {},
+    }
+
+
+def string_equals(left, right):
+    return {"id": nid(), "leftValue": left, "rightValue": right, "operator": {"type": "string", "operation": "equals"}}
+
+
+def boolean_is(left, value):
+    return {
+        "id": nid(), "leftValue": left, "rightValue": "",
+        "operator": {"type": "boolean", "operation": "true" if value else "false", "singleValue": True},
+    }
+
+
 # ---------------------------------------------------------------------------
-# Column lists, built once so SQL column order and JS parameter order can
-# never drift apart from each other.
+# SQL, built once from column lists so SQL column order and the JS parameter
+# order can never drift apart.
 #
 # `source_system` disambiguates which source a row came from now that there
 # are two (google_drive / microsoft_onedrive). It's additive on top of the
@@ -81,6 +232,7 @@ DRIVE_FILE_STATE_COLUMNS = [
     ("mime_type", "$json.mimeType"),
     ("parent_folder_id", "($json.parents || [])[0] || null"),
     ("last_modified_time", "$json.modifiedTime || new Date().toISOString()"),
+    ("last_status", "$json.status"),
 ]
 
 PARTICIPANT_COLUMNS = [
@@ -105,29 +257,16 @@ INGESTION_LOG_COLUMNS = [
 ]
 
 
-def build_insert(schema_table, columns, extra_sql_tail="", jsonb_columns=()):
+def build_insert(schema_table, columns):
     """columns: list of plain column names, each read from $json.<name>."""
     col_sql = ",\n  ".join(columns)
-    placeholders = []
-    js_values = []
-    for i, col in enumerate(columns):
-        ph = f"${i + 1}"
-        if col in jsonb_columns:
-            ph += "::jsonb"
-            js_values.append(f"JSON.stringify($json.{col})")
-        else:
-            js_values.append(f"$json.{col}")
-        placeholders.append(ph)
-    query = (
-        f"INSERT INTO {schema_table} (\n  {col_sql}\n) VALUES (\n  "
-        + ", ".join(placeholders)
-        + f"\n){extra_sql_tail}"
-    )
-    query_replacement = "={{ [" + ", ".join(js_values) + "] }}"
+    placeholders = ", ".join(f"${i + 1}" for i in range(len(columns)))
+    query = f"INSERT INTO {schema_table} (\n  {col_sql}\n) VALUES (\n  {placeholders}\n)"
+    query_replacement = "={{ [" + ", ".join(f"$json.{c}" for c in columns) + "] }}"
     return query, query_replacement
 
 
-def build_upsert_from_pairs(schema_table, param_pairs, literal_columns, conflict_col, update_cols, extra_sql_tail=""):
+def build_upsert_from_pairs(schema_table, param_pairs, literal_columns, conflict_col, update_cols):
     """param_pairs: list of (column_name, js_expression) that become $n
     placeholders. literal_columns: list of (column_name, raw_sql_literal)
     appended after the parameterised ones (e.g. last_processed_at -> now())."""
@@ -138,7 +277,7 @@ def build_upsert_from_pairs(schema_table, param_pairs, literal_columns, conflict
     update_sql = ",\n  ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
     query = (
         f"INSERT INTO {schema_table} (\n  {col_sql}\n) VALUES (\n  {placeholders}\n)"
-        f"\nON CONFLICT ({conflict_col}) DO UPDATE SET\n  {update_sql}{extra_sql_tail}"
+        f"\nON CONFLICT ({conflict_col}) DO UPDATE SET\n  {update_sql}"
     )
     query_replacement = "={{ [" + ", ".join(expr for _, expr in param_pairs) + "] }}"
     return query, query_replacement
@@ -147,30 +286,15 @@ def build_upsert_from_pairs(schema_table, param_pairs, literal_columns, conflict
 DRIVE_FILE_STATE_QUERY, DRIVE_FILE_STATE_PARAMS = build_upsert_from_pairs(
     "ingest.drive_file_state",
     param_pairs=DRIVE_FILE_STATE_COLUMNS,
-    literal_columns=[("last_processed_at", "now()"), ("last_status", "'downloaded'")],
+    literal_columns=[("last_processed_at", "now()")],
     conflict_col="drive_file_id",
-    update_cols=[c for c, _ in DRIVE_FILE_STATE_COLUMNS if c != "drive_file_id"] + ["last_processed_at", "last_status"],
+    update_cols=[c for c, _ in DRIVE_FILE_STATE_COLUMNS if c != "drive_file_id"] + ["last_processed_at"],
 )
 
-PARTICIPANT_QUERY, PARTICIPANT_PARAMS = build_insert(
-    "ingest.participants",
-    PARTICIPANT_COLUMNS,
-    extra_sql_tail="\nON CONFLICT (row_hash) DO NOTHING",
-    jsonb_columns={"extra_json"},
-)
-
-UNMAPPED_QUERY, UNMAPPED_PARAMS = build_insert(
-    "ingest.unmapped_columns_log",
-    UNMAPPED_COLUMNS_LOG_COLUMNS,
-    extra_sql_tail="",
-)
+UNMAPPED_QUERY, UNMAPPED_PARAMS = build_insert("ingest.unmapped_columns_log", UNMAPPED_COLUMNS_LOG_COLUMNS)
 # resolved defaults to false server-side; no need to pass it explicitly.
 
-INGESTION_LOG_QUERY, INGESTION_LOG_PARAMS = build_insert(
-    "ingest.ingestion_log",
-    INGESTION_LOG_COLUMNS,
-    extra_sql_tail="",
-)
+INGESTION_LOG_QUERY, INGESTION_LOG_PARAMS = build_insert("ingest.ingestion_log", INGESTION_LOG_COLUMNS)
 # finished_at should be "now" at insert time, not the run's start time — patch
 # the generated query to add it as a trailing literal column.
 INGESTION_LOG_QUERY = INGESTION_LOG_QUERY.replace(
@@ -179,15 +303,36 @@ INGESTION_LOG_QUERY = INGESTION_LOG_QUERY.replace(
     f"${len(INGESTION_LOG_COLUMNS)}\n)", f"${len(INGESTION_LOG_COLUMNS)}, now()\n)"
 )
 
-# No parameters — fires once per run, after a successful participant insert,
-# so Superset (or whatever reads app.dashboard_refresh_state) can tell new
-# data landed. Wiring the actual Superset-side cache/refresh call is separate
-# follow-up work; this is just the "our side" bookkeeping half of it.
+# One statement per batch of up to 2000 rows. The whole batch travels as ONE
+# jsonb parameter and Postgres does the text->column conversion server-side
+# (every ingest.participants column is TEXT/JSONB, so there's nothing to
+# mis-cast). Returns how many rows were genuinely new, so ingestion_log's
+# rows_loaded is accurate rather than "rows extracted".
+_PARTICIPANT_COL_SQL = ",\n      ".join(PARTICIPANT_COLUMNS)
+PARTICIPANT_BATCH_QUERY = (
+    "WITH ins AS (\n"
+    "  INSERT INTO ingest.participants (\n"
+    f"      {_PARTICIPANT_COL_SQL}\n"
+    "  )\n"
+    "  SELECT\n"
+    f"      {_PARTICIPANT_COL_SQL}\n"
+    "  FROM jsonb_populate_recordset(NULL::ingest.participants, $1::jsonb)\n"
+    "  ON CONFLICT (row_hash) DO NOTHING\n"
+    "  RETURNING 1\n"
+    ")\n"
+    "SELECT count(*)::int AS inserted FROM ins"
+)
+
+# Fires once per file that landed rows, so Superset (or whatever reads
+# app.dashboard_refresh_state) can tell new data landed. Wiring the actual
+# Superset-side cache/refresh call is separate follow-up work; this is just the
+# "our side" bookkeeping half of it.
 MARK_DASHBOARD_DIRTY_QUERY = (
     "UPDATE app.dashboard_refresh_state\n"
     "SET source_version = source_version + 1,\n"
     "    dirty_at = now()\n"
-    "WHERE singleton = true"
+    "WHERE singleton = true\n"
+    "  AND $1::int > 0"
 )
 
 START_RUN_JS = """function uuidv4() {
@@ -229,6 +374,7 @@ TAG_ONEDRIVE_JS = """return $input.all().map((item) => {
   };
 });
 """
+
 
 def record_source_failure_js(source_system):
     return f"""return $input.all().map((item) => {{
@@ -289,411 +435,194 @@ return items.map((item) => ({
 }));
 """
 
-MAP_COLUMNS_JS = r"""const ALIASES = {
-  national_id: ['national id', 'nationalid', 'id number', 'idnumber', 'national id no', 'id no', 'id_number'],
-  full_name: ['full name', 'fullname', 'name', 'participant name', 'trainee name'],
-  first_name: ['first name', 'firstname'],
-  last_name: ['last name', 'lastname', 'surname'],
-  gender: ['gender', 'sex'],
-  email: ['email', 'email address', 'emailaddress'],
-  phone_number: ['phone number', 'phone', 'phonenumber', 'mobile', 'mobile number', 'contact', 'telephone'],
-  age: ['age'],
-  age_group: ['age group', 'agegroup', 'age bracket'],
-  county: ['county', 'county name'],
-  sub_county: ['sub county', 'subcounty'],
-  ward: ['ward'],
-  village: ['village', 'village town', 'town', 'location'],
-  organization: ['organization', 'organisation', 'institution', 'company'],
-  role: ['role', 'designation', 'position'],
-  state_department: ['state department', 'department'],
-  directorate: ['directorate'],
-  disability: ['disability', 'disability status', 'pwd status'],
-  disability_type: ['disability type', 'type of disability'],
-  device_type: ['device type', 'device'],
-  device_description: ['device description', 'device desc'],
-  education_level: ['education level', 'education', 'level of education'],
-  internet_access: ['internet access', 'has internet'],
-  trainer_name: ['trainer name', 'trainer'],
-  trainer_phone: ['trainer phone', 'trainer contact'],
-  follow_up_consent: ['follow up consent', 'consent'],
-  remarks: ['remarks', 'comments', 'notes'],
-  username: ['username', 'user name'],
-  completion_date: ['completion date', 'date completed'],
-  registration_date: ['registration date', 'date registered', 'reg date'],
-  training_time: ['training time', 'time spent'],
-  quiz_average: ['quiz average', 'average score', 'quiz score'],
-  percent_complete: ['percent complete', 'completion rate', 'percentage complete'],
-  program_cohort: ['program cohort', 'cohort', 'program'],
-  cluster: ['cluster'],
-  label: ['label'],
-  serial_no: ['serial no', 'serial number', 'sno', 'sn', 'no'],
-};
 
-function normalize(value) {
-  return String(value)
-    .trim()
-    .toLowerCase()
-    .replace(/[_\-]+/g, ' ')
-    .replace(/[^a-z0-9]+/g, ' ')
-    .trim()
-    .replace(/\s+/g, ' ');
-}
+def postgres_node(wf, name, query, params, position, credential, notes=None, on_error=None):
+    parameters = {"operation": "executeQuery", "query": query}
+    if params is not None:
+        parameters["options"] = {"queryReplacement": params}
+    return wf.add_node(
+        name, "n8n-nodes-base.postgres", 2.6, parameters, position,
+        credentials={"postgres": credential}, notes=notes, on_error=on_error,
+    )
 
-const CANONICAL_FIELDS = Object.keys(ALIASES);
-const ALIAS_LOOKUP = {};
-for (const canonical of CANONICAL_FIELDS) {
-  ALIAS_LOOKUP[normalize(canonical)] = canonical;
-  for (const alias of ALIASES[canonical]) {
-    ALIAS_LOOKUP[normalize(alias)] = canonical;
-  }
-}
 
-function levenshtein(a, b) {
-  const m = a.length;
-  const n = b.length;
-  const dp = [];
-  for (let i = 0; i <= m; i++) {
-    dp.push(new Array(n + 1).fill(0));
-    dp[i][0] = i;
-  }
-  for (let j = 0; j <= n; j++) dp[0][j] = j;
-  for (let i = 1; i <= m; i++) {
-    for (let j = 1; j <= n; j++) {
-      dp[i][j] = a[i - 1] === b[j - 1]
-        ? dp[i - 1][j - 1]
-        : 1 + Math.min(dp[i - 1][j - 1], dp[i - 1][j], dp[i][j - 1]);
-    }
-  }
-  return dp[m][n];
-}
+# ===========================================================================
+# CHILD: loads one window of one file
+# ===========================================================================
 
-function similarity(a, b) {
-  const maxLen = Math.max(a.length, b.length) || 1;
-  return 1 - levenshtein(a, b) / maxLen;
-}
-
-function cyrb53(str, seed) {
-  seed = seed || 0;
-  let h1 = 0xdeadbeef ^ seed;
-  let h2 = 0x41c6ce57 ^ seed;
-  for (let i = 0; i < str.length; i++) {
-    const ch = str.charCodeAt(i);
-    h1 = Math.imul(h1 ^ ch, 2654435761);
-    h2 = Math.imul(h2 ^ ch, 1597334677);
-  }
-  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507);
-  h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507);
-  h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16);
-}
-
-// Extract From File replaces each row's json with just the parsed spreadsheet
-// columns, so the originating file's metadata (id/name/source_system) has to
-// be recovered by tracing pairedItem lineage back to whichever "Tag Source"
-// node produced it. $('Node Name') requires a literal node name, so with
-// multiple sources feeding this same node we try each candidate in turn —
-// itemMatching throws if that node isn't actually this item's ancestor.
-// Adding a third source later just means adding one more entry here.
-const SOURCE_TAG_NODES = [
-  { node: 'Tag Source: Google Drive', system: 'google_drive' },
-  { node: 'Tag Source: OneDrive', system: 'microsoft_onedrive' },
-];
-
-function resolveSource(i) {
-  for (const candidate of SOURCE_TAG_NODES) {
-    try {
-      const matched = $(candidate.node).itemMatching(i);
-      if (matched && matched.json) {
-        return { driveFileId: matched.json.id, sourceFile: matched.json.name, sourceSystem: candidate.system };
-      }
-    } catch (e) {
-      // i's lineage doesn't pass through this candidate's tag node — try the next one.
-    }
-  }
-  throw new Error('Row ' + i + " could not be traced back to a known source — add its 'Tag Source' node to SOURCE_TAG_NODES.");
-}
-
-const runId = $('Start Run').first().json.runId;
-const startedAt = $('Start Run').first().json.startedAt;
-
-const items = $input.all();
-const output = [];
-const fileStats = {};
-
-for (let i = 0; i < items.length; i++) {
-  const item = items[i];
-  const { driveFileId, sourceFile, sourceSystem } = resolveSource(i);
-  const statsKey = sourceSystem + '::' + driveFileId;
-
-  fileStats[statsKey] = fileStats[statsKey] || {
-    drive_file_id: driveFileId,
-    file_name: sourceFile,
-    rows_extracted: 0,
-    unmapped_column_count: 0,
-  };
-  fileStats[statsKey].rows_extracted++;
-
-  const participant = {
-    row_hash: '',
-    source_system: sourceSystem,
-    drive_file_id: driveFileId,
-    source_file: sourceFile,
-    source_sheet: null,
-    source_row_number: i + 1,
-  };
-  for (const field of CANONICAL_FIELDS) participant[field] = null;
-
-  const extra = {};
-  const rawEntries = Object.entries(item.json);
-
-  for (const [rawKey, rawValue] of rawEntries) {
-    const normKey = normalize(rawKey);
-    const canonical = ALIAS_LOOKUP[normKey];
-    const value = rawValue === undefined || rawValue === '' ? null : rawValue;
-
-    if (canonical) {
-      participant[canonical] = value;
-      continue;
-    }
-
-    extra[rawKey] = value;
-    fileStats[statsKey].unmapped_column_count++;
-
-    let bestField = null;
-    let bestScore = 0;
-    for (const field of CANONICAL_FIELDS) {
-      const score = similarity(normKey, normalize(field));
-      if (score > bestScore) {
-        bestScore = score;
-        bestField = field;
-      }
-    }
-
-    output.push({
-      json: {
-        _recordType: 'unmapped_column',
-        drive_file_id: driveFileId,
-        file_name: sourceFile,
-        sheet_name: null,
-        raw_column_name: rawKey,
-        normalized_column_name: normKey,
-        sample_value: value === null ? null : String(value).slice(0, 200),
-        best_fuzzy_match: bestScore >= 0.5 ? bestField : null,
-        best_fuzzy_score: Math.round(bestScore * 100) / 100,
-      },
-    });
-  }
-
-  const hashInput = sourceSystem + '|' + sourceFile + '|' + JSON.stringify(rawEntries.slice().sort());
-  participant.row_hash = 'r' + cyrb53(hashInput);
-  participant.extra_json = extra;
-  participant._recordType = 'participant';
-  output.push({ json: participant });
-}
-
-for (const statsKey of Object.keys(fileStats)) {
-  const stats = fileStats[statsKey];
-  output.push({
-    json: {
-      _recordType: 'ingestion_log',
-      run_id: runId,
-      drive_file_id: stats.drive_file_id,
-      file_name: stats.file_name,
-      sheet_name: null,
-      status: 'loaded',
-      rows_extracted: stats.rows_extracted,
-      rows_loaded: stats.rows_extracted,
-      unmapped_column_count: stats.unmapped_column_count,
-      error_message: null,
-      started_at: startedAt,
+loader = Workflow(
+    LOADER_WORKFLOW_ID,
+    "Pathways Chunk Loader (called by the ingestion workflow)",
+    {
+        "executionOrder": "v1",
+        # A window's data (8MB of text + ~10MB of row batches) is only useful
+        # while it's running. Keep it out of the executions table on success;
+        # failures are still saved so there's something to debug.
+        "saveDataSuccessExecution": "none",
+        "saveManualExecutions": False,
+        "saveExecutionProgress": False,
     },
-  });
-}
-
-return output;
-"""
-
-# Runs after Map Columns, before Route By Record Type — cleans only
-# `participant` items (row_hash was already computed from raw values in Map
-# Columns, so changing these rules later doesn't retroactively change dedup
-# keys for rows already loaded). `unmapped_column` and `ingestion_log` items
-# pass through untouched. Kenya-specific assumption baked in: phone numbers
-# get normalized to +254 format — tell me if that's wrong for any source.
-CLEAN_TRANSFORM_JS = r"""const TITLE_CASE_FIELDS = [
-  'full_name', 'first_name', 'last_name', 'county', 'sub_county', 'ward', 'village',
-  'organization', 'role', 'state_department', 'directorate', 'trainer_name',
-];
-
-const YES_NO_FIELDS = ['disability', 'follow_up_consent', 'internet_access'];
-
-const GENDER_MAP = { m: 'Male', male: 'Male', man: 'Male', f: 'Female', female: 'Female', woman: 'Female' };
-const YES_MAP = { y: 'Yes', yes: 'Yes', true: 'Yes', '1': 'Yes' };
-const NO_MAP = { n: 'No', no: 'No', false: 'No', '0': 'No' };
-
-function trimAll(value) {
-  if (value === null || value === undefined) return null;
-  const s = String(value).trim().replace(/\s+/g, ' ');
-  return s === '' ? null : s;
-}
-
-function titleCase(value) {
-  const s = trimAll(value);
-  if (!s) return s;
-  return s
-    .toLowerCase()
-    .split(' ')
-    .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w))
-    .join(' ');
-}
-
-function normalizeGender(value) {
-  const s = trimAll(value);
-  if (!s) return s;
-  return GENDER_MAP[s.toLowerCase()] || titleCase(s);
-}
-
-function normalizeYesNo(value) {
-  const s = trimAll(value);
-  if (!s) return s;
-  const key = s.toLowerCase();
-  return YES_MAP[key] || NO_MAP[key] || titleCase(s);
-}
-
-function normalizeEmail(value) {
-  const s = trimAll(value);
-  return s ? s.toLowerCase() : s;
-}
-
-// Kenyan mobile numbers: 07xxxxxxxx, 7xxxxxxxx, 2547xxxxxxxx, +2547xxxxxxxx
-// all become +2547xxxxxxxx. Anything that doesn't look like that pattern is
-// just trimmed, not forced, so we don't corrupt a genuinely different format.
-function normalizePhone(value) {
-  const s = trimAll(value);
-  if (!s) return s;
-  let digits = s.replace(/[^\d+]/g, '').replace(/^\+/, '');
-  if (digits.startsWith('0')) digits = '254' + digits.slice(1);
-  else if (/^[71]\d{8}$/.test(digits)) digits = '254' + digits;
-  return /^254\d{9}$/.test(digits) ? '+' + digits : s;
-}
-
-function normalizeDigitsOnly(value) {
-  const s = trimAll(value);
-  if (!s) return s;
-  const digits = s.replace(/\D/g, '');
-  return digits || s;
-}
-
-function normalizePercent(value) {
-  const s = trimAll(value);
-  return s ? s.replace('%', '').trim() : s;
-}
-
-function normalizeDate(value) {
-  const s = trimAll(value);
-  if (!s) return s;
-  const parsed = new Date(s);
-  return isNaN(parsed.getTime()) ? s : parsed.toISOString().slice(0, 10);
-}
-
-const HANDLED_FIELDS = new Set([
-  ...TITLE_CASE_FIELDS,
-  ...YES_NO_FIELDS,
-  'gender', 'email', 'phone_number', 'trainer_phone', 'national_id',
-  'percent_complete', 'quiz_average', 'completion_date', 'registration_date',
-  'extra_json', 'source_row_number',
-]);
-
-const items = $input.all();
-
-return items.map((item) => {
-  const j = item.json;
-  if (j._recordType !== 'participant') {
-    return { json: j };
-  }
-
-  const cleaned = { ...j };
-
-  for (const field of TITLE_CASE_FIELDS) {
-    if (field in cleaned) cleaned[field] = titleCase(cleaned[field]);
-  }
-  for (const field of YES_NO_FIELDS) {
-    if (field in cleaned) cleaned[field] = normalizeYesNo(cleaned[field]);
-  }
-
-  cleaned.gender = normalizeGender(cleaned.gender);
-  cleaned.email = normalizeEmail(cleaned.email);
-  cleaned.phone_number = normalizePhone(cleaned.phone_number);
-  cleaned.trainer_phone = normalizePhone(cleaned.trainer_phone);
-  cleaned.national_id = normalizeDigitsOnly(cleaned.national_id);
-  cleaned.percent_complete = normalizePercent(cleaned.percent_complete);
-  cleaned.quiz_average = normalizePercent(cleaned.quiz_average);
-  cleaned.completion_date = normalizeDate(cleaned.completion_date);
-  cleaned.registration_date = normalizeDate(cleaned.registration_date);
-
-  // Everything else that's still a plain string just gets trimmed/collapsed —
-  // no forced casing, so free-text (remarks) and identifiers (serial_no,
-  // username) aren't mangled.
-  for (const key of Object.keys(cleaned)) {
-    if (HANDLED_FIELDS.has(key)) continue;
-    if (typeof cleaned[key] === 'string') cleaned[key] = trimAll(cleaned[key]);
-  }
-
-  return { json: cleaned };
-});
-"""
-
-# ---------------------------------------------------------------------------
-# Nodes
-# ---------------------------------------------------------------------------
-
-nodes = []
-connections = {}
-
-
-def add_node(name, type_, type_version, parameters, position, credentials=None, notes=None, on_error=None):
-    node = {
-        "id": nid(),
-        "name": name,
-        "type": type_,
-        "typeVersion": type_version,
-        "position": position,
-        "parameters": parameters,
-    }
-    if credentials:
-        node["credentials"] = credentials
-    if notes:
-        node["notes"] = notes
-    if on_error:
-        node["onError"] = on_error
-    nodes.append(node)
-    return name
-
-
-def connect(src, dst, src_output=0, dst_input=0):
-    connections.setdefault(src, {"main": []})
-    out_list = connections[src]["main"]
-    while len(out_list) <= src_output:
-        out_list.append([])
-    out_list[src_output].append({"node": dst, "type": "main", "index": dst_input})
-
-
-manual_trigger = add_node(
-    "Manual Trigger", "n8n-nodes-base.manualTrigger", 1, {}, [0, 300]
 )
 
-start_run = add_node(
-    "Start Run",
-    "n8n-nodes-base.code",
-    2,
+trigger = loader.add_node(
+    "When Executed by Another Workflow", "n8n-nodes-base.executeWorkflowTrigger", 1.1,
+    {"inputSource": "passthrough"}, [0, 300],
+)
+
+plan_request = loader.code("Plan Request", read_js("loader_plan_request.js"), [260, 300])
+
+which_source = loader.add_node(
+    "Which Source?", "n8n-nodes-base.if", 2.2,
+    if_node_conditions(string_equals("={{ $json._req.source_system }}", "microsoft_onedrive")),
+    [520, 300],
+)
+
+
+def fetch_range_node(name, url_note, credential_type, credential, position):
+    return loader.add_node(
+        name, "n8n-nodes-base.httpRequest", 4.2,
+        {
+            "method": "GET",
+            "url": "={{ $json._req.url }}",
+            "authentication": "predefinedCredentialType",
+            "nodeCredentialType": credential_type,
+            "sendHeaders": True,
+            "headerParameters": {"parameters": [{"name": "Range", "value": "={{ $json._req.range }}"}]},
+            "options": {
+                "response": {"response": {"responseFormat": "file", "outputPropertyName": "data"}},
+                "timeout": 300000,
+            },
+        },
+        position,
+        credentials={credential_type: credential},
+        notes=url_note,
+        on_error="continueRegularOutput",
+        extra={"retryOnFail": True, "maxTries": 3, "waitBetweenTries": 3000},
+    )
+
+
+fetch_google = fetch_range_node(
+    "Fetch Range (Google Drive)",
+    "GET drive/v3/files/{id}?alt=media with a Range header, using the same Google Drive OAuth2 credential as the list step. "
+    "Continues on error so a 403/404/416 is reported against the file in ingest.ingestion_log instead of killing the run.",
+    "googleDriveOAuth2Api", GDRIVE_CREDENTIAL, [780, 200],
+)
+fetch_onedrive = fetch_range_node(
+    "Fetch Range (OneDrive)",
+    "GET graph.microsoft.com/v1.0/me/drive/items/{id}/content with a Range header (Graph redirects to a pre-authenticated download URL that honours it). "
+    "Not yet exercised against a live OneDrive — see docs/data4-workflow.md.",
+    "microsoftOneDriveOAuth2Api", ONEDRIVE_CREDENTIAL, [780, 400],
+)
+
+is_xlsx = loader.add_node(
+    "Is XLSX?", "n8n-nodes-base.if", 2.2,
+    if_node_conditions(
+        string_equals("={{ $('Plan Request').first().json._req.ext }}", "xlsx"),
+        boolean_is("={{ !$json.error }}", True),
+    ),
+    [1040, 300],
+)
+
+extract_xlsx = loader.add_node(
+    "Extract XLSX Rows", "n8n-nodes-base.extractFromFile", 1.1,
+    {"operation": "xlsx", "binaryPropertyName": "data", "options": {"headerRow": True}},
+    [1300, 200],
+    notes="Whole-workbook parse — only for small XLSX files. Always outputs an item so an empty sheet still reaches Parse Window and gets logged.",
+    extra={"alwaysOutputData": True},
+)
+
+parse_window = loader.code(
+    "Parse Window", read_js("loader_parse_window.js"), [1560, 300],
+    notes="Splits the fetched byte range into complete CSV records, maps + cleans each row, and packs rows into JSON batches of 2000. A trailing partial row is left for the next window.",
+)
+
+# One insert node per target database, chained: the first is the primary.
+# "Restore Batches" sits between inserts so each later database receives every
+# batch of the window regardless of whether the earlier one accepted it.
+last_node = parse_window
+x = 1820
+for i, (suffix, credential) in enumerate(TARGETS):
+    if i > 0:
+        restore_batches = loader.code(
+            "Restore Batches", read_js("loader_restore_batches.js"), [x, 300],
+            notes="Re-emits the batches for the next database. Needed because the previous insert's output is one result per batch on success but a single error item on failure.",
+        )
+        loader.connect(last_node, restore_batches)
+        last_node, x = restore_batches, x + 260
+    insert_batch = postgres_node(
+        loader, f"Insert Participants Batch{suffix}", PARTICIPANT_BATCH_QUERY, "={{ [ $json.payload ] }}",
+        [x, 300], credential,
+        notes=(
+            "One INSERT per batch; the batch is a single jsonb parameter expanded server-side. All of a window's batches go "
+            "to the database in one round trip, so a window lands on this database completely or not at all. Continues on "
+            "error so the failure is recorded against the file."
+            if i == 0 else
+            "Same batches, additional database. Chained after the previous insert (rather than run in parallel) so "
+            "'Summarize Window' runs exactly once per window."
+        ),
+        on_error="continueRegularOutput",
+    )
+    loader.connect(last_node, insert_batch)
+    last_node, x = insert_batch, x + 260
+
+summarize = loader.code("Summarize Window", read_js("loader_summarize.js"), [x, 300])
+loader.connect(last_node, summarize)
+
+loader.connect(trigger, plan_request)
+loader.connect(plan_request, which_source)
+loader.connect(which_source, fetch_onedrive, src_output=0)
+loader.connect(which_source, fetch_google, src_output=1)
+loader.connect(fetch_google, is_xlsx)
+loader.connect(fetch_onedrive, is_xlsx)
+loader.connect(is_xlsx, extract_xlsx, src_output=0)
+loader.connect(is_xlsx, parse_window, src_output=1)
+loader.connect(extract_xlsx, parse_window)
+
+loader.sticky(
+    "## Chunk loader\n"
+    "Called by **Pathways Ingestion** once per ~8MB window of a file. Takes the loop "
+    "state as input, fetches one byte range, loads its rows into "
+    + ("both databases" if DUAL_WRITE else "the Pathways database")
+    + ", and returns the updated state.\n\n"
+    "Don't run this one by hand — open the ingestion workflow instead.\n\n"
+    "Credentials to assign: Google Drive OAuth2 on **Fetch Range (Google Drive)**, "
+    "Microsoft OneDrive OAuth2 on **Fetch Range (OneDrive)**, and "
+    + ("the two Postgres credentials on the two **Insert Participants Batch** nodes."
+       if DUAL_WRITE else "the Pathways-Only Postgres credential on **Insert Participants Batch**."),
+    [-40, 60], 420, 200,
+)
+
+# ===========================================================================
+# PARENT: lists files, drives the load loop, writes per-file bookkeeping
+# ===========================================================================
+
+wf = Workflow(
+    PARENT_WORKFLOW_ID,
+    "Pathways Ingestion - Drive + OneDrive to ingest.participants",
+    {"executionOrder": "v1"},
+)
+
+manual_trigger = wf.add_node("Manual Trigger", "n8n-nodes-base.manualTrigger", 1, {}, [0, 300])
+
+schedule_trigger = wf.add_node(
+    "Schedule Trigger (Weekdays 7am)",
+    "n8n-nodes-base.scheduleTrigger",
+    1.2,
+    {"rule": {"interval": [{"field": "cronExpression", "expression": "0 7 * * 1-5"}]}},
+    [0, 450],
+    notes="Runs automatically at 7:00 AM Nairobi time (GENERIC_TIMEZONE in .env/compose.yaml), Monday-Friday. Manual Trigger is left in place alongside it for on-demand testing.",
+)
+
+start_run = wf.add_node(
+    "Start Run", "n8n-nodes-base.code", 2,
     {"mode": "runOnceForAllItems", "language": "javaScript", "jsCode": START_RUN_JS},
     [260, 300],
 )
 
 # --- Google Drive branch ---------------------------------------------------
 
-list_files = add_node(
-    "List Data 1-4 Files",
+list_files = wf.add_node(
+    "List Consolidated Data Files",
     "n8n-nodes-base.googleDrive",
     3,
     {
@@ -703,43 +632,37 @@ list_files = add_node(
         "searchMethod": "query",
         "queryString": DATA_FOLDERS_QUERY,
         "returnAll": True,
-        "filter": {
-            "whatToSearch": "files",
-        },
+        "filter": {"whatToSearch": "files"},
         "options": {"fields": ["*"]},
     },
     [520, 180],
     credentials={"googleDriveOAuth2Api": GDRIVE_CREDENTIAL},
     notes=(
-        "Advanced-search query ORs together 'in parents' for Data 1, 2, 3, and 4's "
-        "real folder IDs (see DATA_FOLDER_IDS in the build script) — one node covers "
-        "all four folders. Each returned file's own `parents` field still says which "
-        "one it actually came from."
+        "Searches the CONSOLIDATED DATA folder (CONSOLIDATED_DATA_FOLDER_ID in the "
+        "build script), which replaced the four separate Data 1-4 folders as of "
+        "2026-09-22. Currently holds one file, 20_million_by_2032tbl.csv (~258MB, "
+        "owned by markouma72@gmail.com). Only the listing happens here — the file "
+        "itself is streamed in byte ranges by the 'Load Chunk' loop, so its size "
+        "(returned by this node) is what drives that loop."
     ),
     on_error="continueErrorOutput",
 )
 
-record_failure_gdrive = add_node(
-    "Record Source Failure: Google Drive",
-    "n8n-nodes-base.code",
-    2,
+record_failure_gdrive = wf.add_node(
+    "Record Source Failure: Google Drive", "n8n-nodes-base.code", 2,
     {"mode": "runOnceForAllItems", "language": "javaScript", "jsCode": RECORD_FAILURE_GDRIVE_JS},
     [520, -40],
-    notes="Fed by List Data 1-4 Files' error output. Only runs if that node fails (bad credential, revoked token, folder not found, etc).",
+    notes="Fed by List Consolidated Data Files' error output. Only runs if that node fails (bad credential, revoked token, folder not found, etc).",
 )
 
-tag_gdrive = add_node(
-    "Tag Source: Google Drive",
-    "n8n-nodes-base.code",
-    2,
+tag_gdrive = wf.add_node(
+    "Tag Source: Google Drive", "n8n-nodes-base.code", 2,
     {"mode": "runOnceForAllItems", "language": "javaScript", "jsCode": TAG_GOOGLE_DRIVE_JS},
     [780, 180],
 )
 
-keep_ext = add_node(
-    "Keep CSV or XLSX",
-    "n8n-nodes-base.filter",
-    2.2,
+keep_ext = wf.add_node(
+    "Keep CSV or XLSX", "n8n-nodes-base.filter", 2.2,
     {
         "conditions": {
             "options": {"caseSensitive": False, "leftValue": "", "typeValidation": "strict", "version": 2},
@@ -753,36 +676,10 @@ keep_ext = add_node(
     [1040, 180],
 )
 
-limit_first_test = add_node(
-    "Limit to 1 File (first test)",
-    "n8n-nodes-base.limit",
-    1,
-    {"maxItems": 1, "keep": "firstItems"},
-    [1300, 180],
-    notes="Acceptance test: caps this run to one file across Data 1-4 combined. Delete or disable this node once the single-file test passes and you're ready to process all four folders.",
-)
-
-download_file = add_node(
-    "Download File",
-    "n8n-nodes-base.googleDrive",
-    3,
-    {
-        "authentication": "oAuth2",
-        "resource": "file",
-        "operation": "download",
-        "fileId": rlc("id", "={{ $json.id }}"),
-        "options": {"binaryPropertyName": "data"},
-    },
-    [1560, 180],
-    credentials={"googleDriveOAuth2Api": GDRIVE_CREDENTIAL},
-)
-
 # --- OneDrive branch (mirrors the Google Drive branch) ----------------------
 
-list_onedrive = add_node(
-    "List OneDrive Files",
-    "n8n-nodes-base.microsoftOneDrive",
-    1.1,
+list_onedrive = wf.add_node(
+    "List OneDrive Files", "n8n-nodes-base.microsoftOneDrive", 1.1,
     {
         "authentication": "microsoftOneDriveOAuth2Api",
         "resource": "folder",
@@ -795,28 +692,22 @@ list_onedrive = add_node(
     on_error="continueErrorOutput",
 )
 
-record_failure_onedrive = add_node(
-    "Record Source Failure: OneDrive",
-    "n8n-nodes-base.code",
-    2,
+record_failure_onedrive = wf.add_node(
+    "Record Source Failure: OneDrive", "n8n-nodes-base.code", 2,
     {"mode": "runOnceForAllItems", "language": "javaScript", "jsCode": RECORD_FAILURE_ONEDRIVE_JS},
     [520, 820],
     notes="Fed by List OneDrive Files' error output. Only runs if that node fails (bad credential, revoked token, folder not found, etc).",
 )
 
-tag_onedrive = add_node(
-    "Tag Source: OneDrive",
-    "n8n-nodes-base.code",
-    2,
+tag_onedrive = wf.add_node(
+    "Tag Source: OneDrive", "n8n-nodes-base.code", 2,
     {"mode": "runOnceForAllItems", "language": "javaScript", "jsCode": TAG_ONEDRIVE_JS},
     [780, 620],
-    notes="Maps OneDrive/Graph's field names onto the same shape the Google Drive branch uses (modifiedTime, mimeType, parents) so the shared nodes downstream don't need to know which source they're looking at.",
+    notes="Maps OneDrive/Graph's field names onto the same shape the Google Drive branch uses (modifiedTime, mimeType, parents; size passes through as-is) so the shared nodes downstream don't need to know which source they're looking at.",
 )
 
-keep_ext_onedrive = add_node(
-    "Keep CSV or XLSX (OneDrive)",
-    "n8n-nodes-base.filter",
-    2.2,
+keep_ext_onedrive = wf.add_node(
+    "Keep CSV or XLSX (OneDrive)", "n8n-nodes-base.filter", 2.2,
     {
         "conditions": {
             "options": {"caseSensitive": False, "leftValue": "", "typeValidation": "strict", "version": 2},
@@ -830,341 +721,141 @@ keep_ext_onedrive = add_node(
     [1040, 620],
 )
 
-limit_onedrive = add_node(
-    "Limit to 1 File (OneDrive, first test)",
-    "n8n-nodes-base.limit",
-    1,
+limit_onedrive = wf.add_node(
+    "Limit to 1 File (OneDrive, first test)", "n8n-nodes-base.limit", 1,
     {"maxItems": 1, "keep": "firstItems"},
     [1300, 620],
     notes="Acceptance test: caps this run to one OneDrive file. Delete or disable this node once the single-file test passes.",
 )
 
-download_onedrive = add_node(
-    "Download File (OneDrive)",
-    "n8n-nodes-base.microsoftOneDrive",
-    1.1,
-    {
-        "authentication": "microsoftOneDriveOAuth2Api",
-        "resource": "file",
-        "operation": "download",
-        "fileId": "={{ $json.id }}",
-        "binaryPropertyName": "data",
-    },
-    [1560, 620],
-    credentials={"microsoftOneDriveOAuth2Api": ONEDRIVE_CREDENTIAL},
-)
+# --- Failure fallback --------------------------------------------------------
 
-# --- Shared tail: both sources merge here -----------------------------------
-
-check_all_failed = add_node(
-    "Check All Sources Failed",
-    "n8n-nodes-base.code",
-    2,
+check_all_failed = wf.add_node(
+    "Check All Sources Failed", "n8n-nodes-base.code", 2,
     {"mode": "runOnceForAllItems", "language": "javaScript", "jsCode": CHECK_ALL_SOURCES_FAILED_JS},
     [780, -40],
     notes="Only executes when at least one source failed. Aborts the whole run (throws) only if every source failed; otherwise logs a degraded run to ingestion_log and lets the pipeline continue.",
 )
 
-upsert_drive_state = add_node(
-    "Upsert Drive File State",
-    "n8n-nodes-base.postgres",
-    2.6,
+# --- Load loop ---------------------------------------------------------------
+
+init_load_state = wf.code(
+    "Init Load State", read_js("init_load_state.js"), [1560, 400],
+    notes=(
+        "Collapses all listed files into ONE loop-state item. Two knobs at the top of the code: "
+        "CHUNK_BYTES (window size, default 8MB) and MAX_ROWS (0 = load everything; set e.g. 5000 "
+        "for a quick test against a real database)."
+    ),
+)
+
+load_chunk = wf.add_node(
+    "Load Chunk", "n8n-nodes-base.executeWorkflow", 1.1,
     {
-        "operation": "executeQuery",
-        "query": DRIVE_FILE_STATE_QUERY,
-        "options": {"queryReplacement": DRIVE_FILE_STATE_PARAMS},
+        "source": "database",
+        "workflowId": {"__rl": True, "value": LOADER_WORKFLOW_ID, "mode": "id"},
+        "mode": "once",
+        "options": {"waitForSubWorkflow": True},
     },
-    [1820, 460],
-    credentials={"postgres": POSTGRES_CREDENTIAL},
+    [1820, 400],
+    notes=(
+        "Runs the 'Pathways Chunk Loader' workflow once per ~8MB window. Its memory is released when "
+        "it returns, which is what keeps this run flat instead of growing with the file. If the "
+        "workflow ID shown here doesn't resolve after importing through the editor UI, re-select "
+        "the loader from the dropdown."
+    ),
 )
 
-upsert_drive_state_pathways = add_node(
-    "Upsert Drive File State (Pathways DB)",
-    "n8n-nodes-base.postgres",
-    2.6,
-    {
-        "operation": "executeQuery",
-        "query": DRIVE_FILE_STATE_QUERY,
-        "options": {"queryReplacement": DRIVE_FILE_STATE_PARAMS},
-    },
-    [1820, 620],
-    credentials={"postgres": PATHWAYS_CREDENTIAL},
+more_work = wf.add_node(
+    "More Work?", "n8n-nodes-base.if", 2.2,
+    if_node_conditions(boolean_is("={{ $json.allDone }}", False)),
+    [2080, 400],
+    notes="allDone is false while any file still has bytes left to load — loops back into Load Chunk with the updated state.",
 )
 
-is_xlsx = add_node(
-    "Is XLSX?",
-    "n8n-nodes-base.if",
-    2.2,
-    {
-        "conditions": {
-            "options": {"caseSensitive": False, "leftValue": "", "typeValidation": "strict", "version": 2},
-            "conditions": [
-                {"leftValue": EXTENSION_EXPR, "rightValue": "xlsx", "operator": {"type": "string", "operation": "equals"}},
-            ],
-            "combinator": "and",
-        }
-    },
-    [1820, 180],
+emit_unmapped = wf.code("Emit Unmapped Columns", read_js("emit_unmapped_columns.js"), [2080, 620])
+emit_file_result = wf.code("Emit File Result", read_js("emit_file_result.js"), [2080, 800])
+
+insert_unmapped_nodes, upsert_state_nodes, insert_log_nodes = [], [], []
+for i, (suffix, credential) in enumerate(TARGETS):
+    insert_unmapped_nodes.append(postgres_node(
+        wf, f"Insert Unmapped Column Log{suffix}", UNMAPPED_QUERY, UNMAPPED_PARAMS, [2340, 560 + 120 * i], credential))
+    upsert_state_nodes.append(postgres_node(
+        wf, f"Upsert Drive File State{suffix}", DRIVE_FILE_STATE_QUERY, DRIVE_FILE_STATE_PARAMS, [2340, 800 + 120 * i], credential))
+    insert_log_nodes.append(postgres_node(
+        wf, f"Insert Ingestion Log{suffix}", INGESTION_LOG_QUERY, INGESTION_LOG_PARAMS, [2340, 1040 + 120 * i], credential))
+
+mark_dashboard_dirty = postgres_node(
+    wf, "Mark Dashboard Dirty", MARK_DASHBOARD_DIRTY_QUERY, "={{ [ $json.rows_loaded ] }}", [2340, 1280], TARGETS[0][1],
+    notes="Bumps app.dashboard_refresh_state once a file has landed rows on the primary database, so Superset (or anything reading that table) can tell new data landed. Only covers our side of the bookkeeping — still need Superset's own cache/refresh call wired in once its URL and credentials are available.",
 )
 
-extract_xlsx = add_node(
-    "Extract XLSX Rows",
-    "n8n-nodes-base.extractFromFile",
-    1.1,
-    {"operation": "xlsx", "binaryPropertyName": "data", "options": {"headerRow": True}},
-    [2080, 60],
+wf.sticky(
+    "## Before running\n"
+    "1. Import **both** workflows: `pathways-chunk-loader.json` first, then this one "
+    "(see docs/data4-workflow.md — `n8n import:workflow` keeps the IDs this workflow "
+    "expects; the editor's Import button assigns new ones and you'd re-pick the "
+    "loader in **Load Chunk**).\n"
+    "2. Run `sql/migrations/0001_add_source_system.sql` against BOTH Postgres targets — "
+    "the `source_system` column is new on both.\n"
+    "3. Credentials: Google Drive OAuth2 on **List Consolidated Data Files** (and on "
+    "**Fetch Range (Google Drive)** in the loader); Microsoft OneDrive OAuth2 on "
+    "**List OneDrive Files**; **ICTA Reporting PostgreSQL** on every Postgres node not "
+    "named \"(Pathways DB)\"; **Pathways-Only PostgreSQL** on the ones that are.\n"
+    "4. Set `folderId` on **List OneDrive Files** to the real OneDrive folder ID.\n"
+    "5. First real-database run? Set `MAX_ROWS` in **Init Load State** to something small "
+    "(e.g. 5000), check ingest.participants, then set it back to 0 for the full load.\n\n"
+    "Writes to the shared `ingest`/`app` schema on the real reporting DB — test against "
+    "the local `postgres-reporting` sandbox first if unsure.\n\n"
+    "**Mark Dashboard Dirty** only updates our own bookkeeping table "
+    "(`app.dashboard_refresh_state`) — it does not call Superset yet.",
+    [-40, -140], 560, 330,
 )
 
-extract_csv = add_node(
-    "Extract CSV Rows",
-    "n8n-nodes-base.extractFromFile",
-    1.1,
-    {"operation": "csv", "binaryPropertyName": "data", "options": {"headerRow": True}},
-    [2080, 300],
-)
+# --- Connections ---------------------------------------------------------------
 
-map_columns = add_node(
-    "Map Columns & Detect Unmapped",
-    "n8n-nodes-base.code",
-    2,
-    {"mode": "runOnceForAllItems", "language": "javaScript", "jsCode": MAP_COLUMNS_JS},
-    [2340, 180],
-)
-
-clean_transform = add_node(
-    "Clean & Transform Participant Data",
-    "n8n-nodes-base.code",
-    2,
-    {"mode": "runOnceForAllItems", "language": "javaScript", "jsCode": CLEAN_TRANSFORM_JS},
-    [2600, 180],
-    notes="Only touches _recordType == 'participant' items. Title-cases names/locations, normalizes gender + yes/no fields, normalizes phone numbers to +254 format, strips non-digits from national_id, trims everything else.",
-)
-
-route_by_type = add_node(
-    "Route By Record Type",
-    "n8n-nodes-base.switch",
-    3.2,
-    {
-        "mode": "rules",
-        "rules": {
-            "values": [
-                {
-                    "outputKey": "participant",
-                    "conditions": string_condition("={{ $json._recordType }}", "participant")["conditions"],
-                },
-                {
-                    "outputKey": "unmapped_column",
-                    "conditions": string_condition("={{ $json._recordType }}", "unmapped_column")["conditions"],
-                },
-                {
-                    "outputKey": "ingestion_log",
-                    "conditions": string_condition("={{ $json._recordType }}", "ingestion_log")["conditions"],
-                },
-            ]
-        },
-        "options": {},
-    },
-    [2860, 180],
-)
-
-insert_participant = add_node(
-    "Insert Participant Row",
-    "n8n-nodes-base.postgres",
-    2.6,
-    {
-        "operation": "executeQuery",
-        "query": PARTICIPANT_QUERY,
-        "options": {"queryReplacement": PARTICIPANT_PARAMS},
-    },
-    [3120, 20],
-    credentials={"postgres": POSTGRES_CREDENTIAL},
-)
-
-insert_participant_pathways = add_node(
-    "Insert Participant Row (Pathways DB)",
-    "n8n-nodes-base.postgres",
-    2.6,
-    {
-        "operation": "executeQuery",
-        "query": PARTICIPANT_QUERY,
-        "options": {"queryReplacement": PARTICIPANT_PARAMS},
-    },
-    [3120, 130],
-    credentials={"postgres": PATHWAYS_CREDENTIAL},
-)
-
-insert_unmapped = add_node(
-    "Insert Unmapped Column Log",
-    "n8n-nodes-base.postgres",
-    2.6,
-    {
-        "operation": "executeQuery",
-        "query": UNMAPPED_QUERY,
-        "options": {"queryReplacement": UNMAPPED_PARAMS},
-    },
-    [3120, 240],
-    credentials={"postgres": POSTGRES_CREDENTIAL},
-)
-
-insert_unmapped_pathways = add_node(
-    "Insert Unmapped Column Log (Pathways DB)",
-    "n8n-nodes-base.postgres",
-    2.6,
-    {
-        "operation": "executeQuery",
-        "query": UNMAPPED_QUERY,
-        "options": {"queryReplacement": UNMAPPED_PARAMS},
-    },
-    [3120, 350],
-    credentials={"postgres": PATHWAYS_CREDENTIAL},
-)
-
-insert_ingestion_log = add_node(
-    "Insert Ingestion Log",
-    "n8n-nodes-base.postgres",
-    2.6,
-    {
-        "operation": "executeQuery",
-        "query": INGESTION_LOG_QUERY,
-        "options": {"queryReplacement": INGESTION_LOG_PARAMS},
-    },
-    [3120, 460],
-    credentials={"postgres": POSTGRES_CREDENTIAL},
-)
-
-insert_ingestion_log_pathways = add_node(
-    "Insert Ingestion Log (Pathways DB)",
-    "n8n-nodes-base.postgres",
-    2.6,
-    {
-        "operation": "executeQuery",
-        "query": INGESTION_LOG_QUERY,
-        "options": {"queryReplacement": INGESTION_LOG_PARAMS},
-    },
-    [3120, 570],
-    credentials={"postgres": PATHWAYS_CREDENTIAL},
-)
-
-mark_dashboard_dirty = add_node(
-    "Mark Dashboard Dirty",
-    "n8n-nodes-base.postgres",
-    2.6,
-    {
-        "operation": "executeQuery",
-        "query": MARK_DASHBOARD_DIRTY_QUERY,
-    },
-    [3380, 20],
-    credentials={"postgres": POSTGRES_CREDENTIAL},
-    notes="Bumps app.dashboard_refresh_state after a successful participant insert on the shared DB, so Superset (or anything reading that table) can tell new data landed. Only covers our side of the bookkeeping — still need Superset's own cache/refresh call wired in once its URL and credentials are available.",
-)
-
-sticky = {
-    "id": nid(),
-    "name": "Setup Notes",
-    "type": "n8n-nodes-base.stickyNote",
-    "typeVersion": 1,
-    "position": [-40, -140],
-    "parameters": {
-        "width": 480,
-        "height": 300,
-        "content": (
-            "## Before running\n"
-            "1. Run `sql/migrations/0001_add_source_system.sql` against BOTH Postgres "
-            "targets — the `source_system` column is new on both.\n"
-            "2. Create a Postgres credential named **ICTA Reporting PostgreSQL** "
-            "(the shared ICTA+Pathways DB — real host/port/database/user/password from "
-            "the team, SSL: disable) and assign it on every node whose name does NOT "
-            "say \"(Pathways DB)\".\n"
-            "3. Create a second Postgres credential named **Pathways-Only PostgreSQL** "
-            "and assign it on every node whose name DOES say \"(Pathways DB)\" — this "
-            "one doesn't have real credentials yet, so point it at the local "
-            "`postgres-pathways` sandbox for now (see compose.yaml) and swap in real "
-            "ones once the team provisions that database.\n"
-            "4. Create/select a Google Drive OAuth2 credential on both Google Drive "
-            "nodes, and a Microsoft OneDrive OAuth2 credential on both OneDrive nodes.\n"
-            "5. **List Data 1-4 Files** already has Data 1-4's real folder IDs baked "
-            "into its query. Set `folderId` on **List OneDrive Files** to the real "
-            "OneDrive folder ID.\n"
-            "6. Leave both **Limit to 1 File** nodes enabled for the first "
-            "acceptance-test run. Delete or disable them once that passes.\n\n"
-            "Writes to the shared `ingest`/`app` schema on the real reporting DB — "
-            "test against the local `postgres-reporting` sandbox first if unsure.\n\n"
-            "**Mark Dashboard Dirty** only updates our own bookkeeping table "
-            "(`app.dashboard_refresh_state`) — it does not call Superset yet. That "
-            "needs Superset's URL + an API credential, which we don't have wired up."
-        ),
-    },
-}
-nodes.append(sticky)
-
-# ---------------------------------------------------------------------------
-# Connections
-# ---------------------------------------------------------------------------
-
-connect(manual_trigger, start_run)
+wf.connect(manual_trigger, start_run)
+wf.connect(schedule_trigger, start_run)
 
 # Google Drive branch
-connect(start_run, list_files)
-connect(list_files, tag_gdrive, src_output=0)
-connect(list_files, record_failure_gdrive, src_output=1)
-connect(tag_gdrive, keep_ext)
-connect(keep_ext, limit_first_test)
-connect(limit_first_test, download_file)
+wf.connect(start_run, list_files)
+wf.connect(list_files, tag_gdrive, src_output=0)
+wf.connect(list_files, record_failure_gdrive, src_output=1)
+wf.connect(tag_gdrive, keep_ext)
+wf.connect(keep_ext, init_load_state)
 
 # OneDrive branch
-connect(start_run, list_onedrive)
-connect(list_onedrive, tag_onedrive, src_output=0)
-connect(list_onedrive, record_failure_onedrive, src_output=1)
-connect(tag_onedrive, keep_ext_onedrive)
-connect(keep_ext_onedrive, limit_onedrive)
-connect(limit_onedrive, download_onedrive)
+wf.connect(start_run, list_onedrive)
+wf.connect(list_onedrive, tag_onedrive, src_output=0)
+wf.connect(list_onedrive, record_failure_onedrive, src_output=1)
+wf.connect(tag_onedrive, keep_ext_onedrive)
+wf.connect(keep_ext_onedrive, limit_onedrive)
+wf.connect(limit_onedrive, init_load_state)
 
 # Failure fallback: both "Record Source Failure" nodes feed the same check.
 # It only actually runs when at least one of them produced an item.
-connect(record_failure_gdrive, check_all_failed)
-connect(record_failure_onedrive, check_all_failed)
-connect(check_all_failed, insert_ingestion_log)
-connect(check_all_failed, insert_ingestion_log_pathways)
+wf.connect(record_failure_gdrive, check_all_failed)
+wf.connect(record_failure_onedrive, check_all_failed)
+for node in insert_log_nodes:
+    wf.connect(check_all_failed, node)
 
-# Both branches merge here
-connect(download_file, upsert_drive_state)
-connect(download_file, upsert_drive_state_pathways)
-connect(download_file, is_xlsx)
-connect(download_onedrive, upsert_drive_state)
-connect(download_onedrive, upsert_drive_state_pathways)
-connect(download_onedrive, is_xlsx)
+# Load loop: Init -> Load Chunk -> (More Work? -> Load Chunk)*, with the
+# per-window results fanned out to the bookkeeping writes.
+wf.connect(init_load_state, load_chunk)
+wf.connect(load_chunk, more_work)
+wf.connect(more_work, load_chunk, src_output=0)
+wf.connect(load_chunk, emit_unmapped)
+wf.connect(load_chunk, emit_file_result)
 
-connect(is_xlsx, extract_xlsx, src_output=0)
-connect(is_xlsx, extract_csv, src_output=1)
-connect(extract_xlsx, map_columns)
-connect(extract_csv, map_columns)
-connect(map_columns, clean_transform)
-connect(clean_transform, route_by_type)
+# Every bookkeeping write lands in each target database (one, or two with DUAL_WRITE).
+for node in insert_unmapped_nodes:
+    wf.connect(emit_unmapped, node)
+for node in upsert_state_nodes + insert_log_nodes:
+    wf.connect(emit_file_result, node)
+wf.connect(emit_file_result, mark_dashboard_dirty)
 
-# Dual-write: every insert lands in both the shared DB and the Pathways-only DB.
-connect(route_by_type, insert_participant, src_output=0)
-connect(route_by_type, insert_participant_pathways, src_output=0)
-connect(route_by_type, insert_unmapped, src_output=1)
-connect(route_by_type, insert_unmapped_pathways, src_output=1)
-connect(route_by_type, insert_ingestion_log, src_output=2)
-connect(route_by_type, insert_ingestion_log_pathways, src_output=2)
-
-# Dashboard bookkeeping: only after a real participant row lands in the
-# shared DB (the one the dashboard actually reads).
-connect(insert_participant, mark_dashboard_dirty)
-
-workflow = {
-    "name": "Pathways Ingestion - Drive + OneDrive to ingest.participants",
-    "nodes": nodes,
-    "connections": connections,
-    "active": False,
-    "settings": {"executionOrder": "v1"},
-    "pinData": {},
-}
-
-os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
-with open(OUT_PATH, "w", encoding="utf-8") as f:
-    json.dump(workflow, f, indent=2)
-
-print(f"Wrote {os.path.abspath(OUT_PATH)}")
-print(f"Nodes: {len(nodes)}")
+if __name__ == "__main__":
+    loader.write(LOADER_PATH)
+    wf.write(PARENT_PATH)
+    if LOCAL_CREDENTIALS:
+        for workflow, path in ((loader, LOADER_PATH), (wf, PARENT_PATH)):
+            workflow.write(os.path.join(LOCAL_OUT_DIR, os.path.basename(path)), workflow.wired(LOCAL_CREDENTIALS))
